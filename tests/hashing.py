@@ -6,7 +6,7 @@ import llvmlite.ir
 from llvmlite.ir import IRBuilder, Value as IRValue
 
 import dispyatcher
-from dispyatcher import CallSite, IdentityHandle, SimpleConstantHandle, DropArgumentsHandle, Type
+from dispyatcher import CallSite, IdentityHandle, SimpleConstantHandle, IgnoreArgumentsHandle, Type
 from dispyatcher.hashing import HashValueDispatcher, HashValueGuard
 
 
@@ -15,7 +15,7 @@ class HashingTests(unittest.TestCase):
     def test_exact_ints(self):
         i32 = dispyatcher.MachineType(llvmlite.ir.IntType(32))
         hashing = HashValueDispatcher(IdentityHandle(i32), ExactIntegerGuard())
-        hashing.insert((7,), DropArgumentsHandle(SimpleConstantHandle(i32, 42), 0, i32))
+        hashing.insert((7,), IgnoreArgumentsHandle(SimpleConstantHandle(i32, 42), 0, i32))
         callsite = CallSite(hashing)
         self.assertEqual(callsite.cfunc(ctypes.c_int32(0)), 0)
         self.assertEqual(callsite.cfunc(ctypes.c_int32(6)), 6)
@@ -24,8 +24,8 @@ class HashingTests(unittest.TestCase):
     def test_lowbit_ints(self):
         i32 = dispyatcher.MachineType(llvmlite.ir.IntType(32))
         hashing = HashValueDispatcher(IdentityHandle(i32), LowBitIntegerGuard())
-        hashing.insert((7,), DropArgumentsHandle(SimpleConstantHandle(i32, 42), 0, i32))
-        hashing.insert((1,), DropArgumentsHandle(SimpleConstantHandle(i32, 7), 0, i32))
+        hashing.insert((7,), IgnoreArgumentsHandle(SimpleConstantHandle(i32, 42), 0, i32))
+        hashing.insert((1,), IgnoreArgumentsHandle(SimpleConstantHandle(i32, 7), 0, i32))
         callsite = CallSite(hashing)
         self.assertEqual(callsite.cfunc(ctypes.c_int32(0)), 0)
         self.assertEqual(callsite.cfunc(ctypes.c_int32(1)), 7)
@@ -35,11 +35,11 @@ class HashingTests(unittest.TestCase):
 
     def test_lowbit_ints_2args(self):
         i32 = dispyatcher.MachineType(llvmlite.ir.IntType(32))
-        hashing = HashValueDispatcher(DropArgumentsHandle(IdentityHandle(i32), 1, i32),
+        hashing = HashValueDispatcher(IgnoreArgumentsHandle(IdentityHandle(i32), 1, i32),
                                       LowBitIntegerGuard(),
                                       LowBitIntegerGuard())
-        hashing.insert((1, 1), DropArgumentsHandle(SimpleConstantHandle(i32, 42), 0, i32, i32))
-        hashing.insert((3, 4), DropArgumentsHandle(SimpleConstantHandle(i32, 7), 0, i32, i32))
+        hashing.insert((1, 1), IgnoreArgumentsHandle(SimpleConstantHandle(i32, 42), 0, i32, i32))
+        hashing.insert((3, 4), IgnoreArgumentsHandle(SimpleConstantHandle(i32, 7), 0, i32, i32))
         callsite = CallSite(hashing)
         self.assertEqual(callsite.cfunc(ctypes.c_int32(0), ctypes.c_int32(0)), 0)
         self.assertEqual(callsite.cfunc(ctypes.c_int32(1), ctypes.c_int32(1)), 42)

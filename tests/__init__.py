@@ -40,12 +40,12 @@ class SimpleTests(unittest.TestCase):
 
     def test_echo_drop_start(self):
         i32 = dispyatcher.MachineType(llvmlite.ir.IntType(32))
-        callsite = dispyatcher.CallSite(dispyatcher.DropArgumentsHandle(dispyatcher.IdentityHandle(i32), 0, i32))
+        callsite = dispyatcher.CallSite(dispyatcher.IgnoreArgumentsHandle(dispyatcher.IdentityHandle(i32), 0, i32))
         self.assertEqual(callsite.cfunc(ctypes.c_int32(42), ctypes.c_int32(47)), 47)
 
     def test_echo_drop_end(self):
         i32 = dispyatcher.MachineType(llvmlite.ir.IntType(32))
-        callsite = dispyatcher.CallSite(dispyatcher.DropArgumentsHandle(dispyatcher.IdentityHandle(i32), 1, i32))
+        callsite = dispyatcher.CallSite(dispyatcher.IgnoreArgumentsHandle(dispyatcher.IdentityHandle(i32), 1, i32))
         self.assertEqual(callsite.cfunc(ctypes.c_int32(42), ctypes.c_int32(47)), 42)
 
     def test_constant_int(self):
@@ -60,7 +60,7 @@ class CallSiteTest(unittest.TestCase):
         i8 = dispyatcher.MachineType(llvmlite.ir.IntType(8))
         i32 = dispyatcher.MachineType(llvmlite.ir.IntType(32))
         inner_callsite = dispyatcher.CallSite(dispyatcher.IdentityHandle(i32))
-        callsite = dispyatcher.CallSite(dispyatcher.DropArgumentsHandle(inner_callsite, 1, i32))
+        callsite = dispyatcher.CallSite(dispyatcher.IgnoreArgumentsHandle(inner_callsite, 1, i32))
         self.assertEqual(callsite.cfunc(ctypes.c_int32(1024), ctypes.c_int32(47)), 1024)
         inner_callsite.handle = dispyatcher.IdentityHandle(i8).cast(i32, i32)
         self.assertEqual(callsite.cfunc(ctypes.c_int32(1025), ctypes.c_int32(47)), 1)

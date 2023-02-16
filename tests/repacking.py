@@ -7,7 +7,7 @@ import llvmlite.ir
 from llvmlite.ir import IRBuilder, Value as IRValue, Block
 
 import dispyatcher
-from dispyatcher import CallSite, IdentityHandle, SimpleConstantHandle, DropArgumentsHandle, Type
+from dispyatcher import CallSite, IdentityHandle, SimpleConstantHandle, IgnoreArgumentsHandle, Type
 from dispyatcher.repacking import Repacker, RepackingDispatcher
 
 
@@ -15,8 +15,8 @@ class RepackTests(unittest.TestCase):
 
     def test_exact_ints(self):
         i32 = dispyatcher.MachineType(llvmlite.ir.IntType(32))
-        repacking = SummingRepackingHandle(DropArgumentsHandle(SimpleConstantHandle(i32, 42), 0, i32, i32, i32), 1)
-        repacking.append(DropArgumentsHandle(IdentityHandle(i32), 0, i32), 7)
+        repacking = SummingRepackingHandle(IgnoreArgumentsHandle(SimpleConstantHandle(i32, 42), 0, i32, i32, i32), 1)
+        repacking.append(IgnoreArgumentsHandle(IdentityHandle(i32), 0, i32), 7)
         callsite = CallSite(repacking)
         self.assertEqual(callsite.cfunc(ctypes.c_int32(0), ctypes.c_int32(0), ctypes.c_int32(0), ctypes.c_int32(0)), 42)
         self.assertEqual(callsite.cfunc(ctypes.c_int32(0), ctypes.c_int32(0), ctypes.c_int32(0), ctypes.c_int32(3)), 42)

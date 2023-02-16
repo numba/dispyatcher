@@ -701,7 +701,7 @@ class PreprocessArgumentHandle(Handle):
         return f"Preprocess ({self.__handle}) at {self.__index} with ({self.__preprocessor}"
 
 
-class DropArgumentsHandle(Handle):
+class IgnoreArgumentsHandle(Handle):
     """
     Creates a new handle that discards arguments before calling another handle.
 
