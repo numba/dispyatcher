@@ -224,7 +224,6 @@ class _TupleUnpacker(Repacker):
 
         builder.position_at_end(success_block)
         output_values = [o for output in outputs for o in output()]
-        print(output_values)
         return output_values
 
     def __str__(self) -> str:

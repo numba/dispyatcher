@@ -311,6 +311,7 @@ class CallSite(Handle):
     __other_sites: Dict[str, ctypes.c_char_p]
     __type: llvmlite.ir.FunctionType
     __address: ctypes.c_char_p
+    llvm_ir: str
 
     def __init__(self, handle):
         super().__init__()
@@ -321,6 +322,7 @@ class CallSite(Handle):
         self.__handle = handle
         self.__engine = None
         self.__cfunc = None
+        self.llvm_ir = "; Not yet compiled"
         handle.register(self)
         self.invalidate()
 
@@ -354,10 +356,12 @@ class CallSite(Handle):
         builder = IRBuilder(function.append_basic_block())
         builder.ret(self.__handle.generate_ir(builder, function.args, global_addresses))
         module.functions.append(function)
+
+        self.llvm_ir = str(module)
         if self.__engine:
             self.__engine.run_static_destructors()
 
-        self.__engine = llvmlite.binding.create_mcjit_compiler(llvmlite.binding.parse_assembly(str(module)),
+        self.__engine = llvmlite.binding.create_mcjit_compiler(llvmlite.binding.parse_assembly(self.llvm_ir),
                                                                machine_triple.create_target_machine())
         self.__engine.finalize_object()
         self.__engine.run_static_constructors()
