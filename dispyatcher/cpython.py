@@ -6,7 +6,10 @@ from llvmlite.ir import IRBuilder, Value as IRValue, Type as LLType, Block
 
 import dispyatcher
 import dispyatcher.general
-from dispyatcher import Type, Handle, llvm_type_to_ctype
+from dispyatcher import Type, Handle, llvm_type_to_ctype, PreprocessArgumentHandle
+from dispyatcher.accessors import GetElementPointer
+from dispyatcher.general import MachineType
+from dispyatcher.permute import implode_args
 from dispyatcher.repacking import RepackingDispatcher, Repacker
 from dispyatcher.resource import ResourceHandle
 
@@ -252,6 +255,40 @@ FLOAT_TUPLE_ELEMENT = SimpleTupleElement("f", llvmlite.ir.FloatType())
 DOUBLE_TUPLE_ELEMENT = SimpleTupleElement("d", llvmlite.ir.DoubleType())
 
 PY_OBJECT_TUPLE_ELEMENT = SimpleTupleElement("O", PY_OBJECT_TYPE.machine_type())
+
+
+class _PyComplexType(Type, TupleElement):
+
+    def ctypes_type(self):
+        return ctypes.py_object
+
+    def machine_type(self) -> LLType:
+        return llvmlite.ir.LiteralStructType((llvmlite.ir.DoubleType(), llvmlite.ir.DoubleType()))
+
+    def __str__(self) -> str:
+        return "PyComplex"
+
+    def format_code(self) -> str:
+        return "D"
+
+    def pack(self) -> int:
+        return 1
+
+    def unpack(self, builder: IRBuilder) -> TupleArguments:
+        alloc = builder.alloca(self.machine_type())
+        return TupleArguments(unpack_args=(alloc,), call_args=lambda: (builder.load(alloc),))
+
+
+PY_COMPLEX_TYPE = _PyComplexType()
+""" The type for complex number """
+
+
+PY_COMPLEX_REAL = GetElementPointer(PY_COMPLEX_TYPE, 0, MachineType(llvmlite.ir.DoubleType()))
+PY_COMPLEX_IMAG = GetElementPointer(PY_COMPLEX_TYPE, 1, MachineType(llvmlite.ir.DoubleType()))
+
+
+def implode_complex_number(handle: Handle, index: int) -> Handle:
+    return implode_args(handle, index, PY_COMPLEX_REAL, PY_COMPLEX_IMAG)
 
 
 def find_unpack(ty: Type) -> TupleElement:
