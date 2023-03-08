@@ -1,11 +1,11 @@
 import copy
 import ctypes
 import weakref
-from typing import Sequence, List, Dict, Union, Any
+from typing import Sequence, List, Dict, Union, TypeVar
 
 import llvmlite.binding
 import llvmlite.ir
-from llvmlite.ir import Type as LLType, IRBuilder, Value as IRValue
+from llvmlite.ir import Type as LLType, IRBuilder, Value as IRValue, PointerType
 
 
 def llvm_type_to_ctype(ty: LLType):
@@ -67,7 +67,7 @@ class Type:
     """
     The representation of a parameter or return type that a handle can use
     """
-    def into_type(self, target):
+    def into_type(self, target) -> Union["Type", None]:
         """
         Convert from self type into the target type provided.
 
@@ -80,7 +80,7 @@ class Type:
         """
         pass
 
-    def from_type(self, source):
+    def from_type(self, source) -> Union["Type", None]:
         """
         Convert from the provided type into the self type.
 
@@ -117,55 +117,6 @@ class Type:
         machine type is used purely for generating code.
         """
         pass
-
-
-class MachineType(Type):
-    """
-    A high-level type that operates on low-level machine types
-
-    This would be the most direct mapping to C language types available.
-    """
-    __type: LLType
-
-    def __init__(self, ty: LLType):
-        """
-        Construct a new instance of a machine type given the matching LLVM type
-        :param ty:
-        """
-        self.__type = ty
-
-    def __eq__(self, o: object) -> bool:
-        if isinstance(o, MachineType):
-            return self.__type == o.__type
-        else:
-            return False
-
-    def __str__(self) -> str:
-        return str(self.__type)
-
-    def into_type(self, target):
-        if isinstance(target, MachineType):
-            self_is_int = isinstance(self.__type, llvmlite.ir.IntType)
-            self_is_fp = is_llvm_floating_point(self.__type)
-            other_is_int = isinstance(target.__type, llvmlite.ir.IntType)
-            other_is_fp = is_llvm_floating_point(target.__type)
-            if self_is_int and other_is_int:
-                return IntegerResizeHandle(self, target)
-            if self_is_fp and other_is_fp:
-                return FloatResizeHandle(self, target)
-            if self_is_int and other_is_fp:
-                return IntegerToFloatHandle(self, target)
-            if self_is_fp and other_is_int:
-                return FloatToIntegerHandle(self, target)
-            if isinstance(self.__type, llvmlite.ir.PointerType) and isinstance(target.__type, llvmlite.ir.PointerType):
-                return BitCastHandle(self, target)
-        return None
-
-    def from_type(self, source):
-        return None
-
-    def machine_type(self) -> LLType:
-        return self.__type
 
 
 class InvalidationListener:
@@ -260,7 +211,24 @@ class Handle(InvalidationTarget):
     global state is acceptable, if explicitly desired.
     """
 
-    def cast(self, target_return_type: Type, *target_parameter_types: Type):
+    def __add__(self, other):
+        if isinstance(other, Handle):
+            return PreprocessArgumentHandle(other, 0, self)
+        else:
+            raise TypeError(f"Unsupported operand type for +: {type(other)}")
+
+    def cast(self, target_return_type: Type, *target_parameter_types: Type) -> "Handle":
+        """
+        Determine the automatic type-directed conversions necessary to convert a handle to the signature provided.
+
+        The number of arguments must match and then automatic type conversion done on each argument individually and
+        the return types. Casts are logically distinct from other conversion operations because they don't combine or
+        separate arguments.
+        If target type is the same as the original type, no conversion is applied.
+        :param target_return_type: the new return type
+        :param target_parameter_types: the new argument types
+        :return: the new handle
+        """
         (source_ret, source_args) = self.function_type()
         if source_ret == target_return_type and source_args == target_parameter_types:
             return self
@@ -287,10 +255,25 @@ class Handle(InvalidationTarget):
         return CastHandle(self, ret_handle, arg_handles)
 
     def function_type(self) -> (Type, Sequence[Type]):
+        """
+        Gets the type of the handle as the return type and a sequence of argument types
+        :return: the return type and a sequence of argument types
+        """
         pass
 
     def generate_ir(self, builder: IRBuilder, args: Sequence[IRValue],
                     global_addresses: Dict[str, ctypes.c_char_p]) -> IRValue:
+        """
+        Convert the handle into LLVM machine code
+        :param builder: the LLVM IR builder
+        :param args: the arguments to the handle
+        :param global_addresses: a dictionary for any external addresses required. The handle can reference an external
+        function by generating a constant and then stuffing the desired address for that constant into this table. LLVM
+        does not permit writing raw addresses for function pointers, so this acts as a workaround. Moreover, these
+        addresses can be updated dynamically using the invalidation mechanism. Strictly, these don't have to be
+        function pointers; they can be any kind of pointer
+        :return: the value that is the output of the handle
+        """
         pass
 
 
@@ -463,199 +446,6 @@ class IdentityHandle(Handle):
         return arg
 
 
-class IntegerResizeHandle(Handle):
-    """
-    Convert an integer to the correct size through signed extension or truncation, as appropriate.
-
-    The machine types for both of the types provided must be `llvm.ir.IntType`. This handle assumes the type conversion
-    is acceptable for the types provided; it only cares about the machine precision.
-    """
-    __source: Type
-    __target: Type
-
-    def __init__(self, source: Type, target: Type):
-        super().__init__()
-        assert isinstance(source.machine_type(), llvmlite.ir.IntType), "Source type must have an integer machine type"
-        assert isinstance(target.machine_type(), llvmlite.ir.IntType), "target type must have an integer machine type"
-        self.__source = source
-        self.__target = target
-
-    def __str__(self) -> str:
-        return f"Convert {self.__source} → {self.__target}"
-
-    def function_type(self) -> (Type, Sequence[Type]):
-        return self.__target, (self.__source,)
-
-    def generate_ir(self, builder: IRBuilder, args: Sequence[IRValue],
-                    global_addresses: Dict[str, ctypes.c_char_p]) -> IRValue:
-        (arg, ) = args
-        if self.__source.machine_type().width > self.__target.machine_type().width:
-            return builder.trunc(arg, self.__target.machine_type())
-        if self.__source.machine_type().width < self.__target.machine_type().width:
-            return builder.sext(arg, self.__target.machine_type())
-        return arg
-
-
-class FloatResizeHandle(Handle):
-    """
-    Convert a floating-point to the correct size through extension or truncation, as appropriate.
-
-    The machine types for both of the types provided must be `llvm.ir.HalfType`, `llvm.ir.FloatType`, or
-    `llvm.ir.DoubleType`. This handle assumes the type conversion is acceptable for the types provided; it only cares
-    about the machine precision.
-    """
-    __source: Type
-    __target: Type
-
-    def __init__(self, source: Type, target: Type):
-        super().__init__()
-        assert is_llvm_floating_point(source.machine_type()), "Source type must have a floating-point machine type"
-        assert is_llvm_floating_point(target.machine_type()), "Target type must have a floating-point machine type"
-        self.__source = source
-        self.__target = target
-
-    def __str__(self) -> str:
-        return f"Convert f{self.__source} → f{self.__target}"
-
-    def function_type(self) -> (Type, Sequence[Type]):
-        return self.__target, (self.__source,)
-
-    def generate_ir(self, builder: IRBuilder, args: Sequence[IRValue],
-                    global_addresses: Dict[str, ctypes.c_char_p]) -> IRValue:
-        def width(ty: llvmlite.ir.Type) -> int:
-            if isinstance(ty, llvmlite.ir.HalfType):
-                return 16
-            if isinstance(ty, llvmlite.ir.FloatType):
-                return 32
-            if isinstance(ty, llvmlite.ir.DoubleType):
-                return 64
-            raise "Invalid floating point type"
-        (arg, ) = args
-        source_width = width(self.__source.machine_type())
-        target_machine_type = self.__target.machine_type()
-        target_width = width(target_machine_type)
-        if source_width > target_width:
-            return builder.fptrunc(arg, self.__target.machine_type())
-        if source_width < target_width:
-            return builder.fpext(arg, self.__target.machine_type())
-        return arg
-
-
-class IntegerToFloatHandle(Handle):
-    """
-    Converts an integer type to a floating point type
-
-    The source type must have a machine type of `llvm.ir.IntType` and the target must have a machine type of
-    `llvm.ir.HalfType`, `llvm.ir.FloatType`, or `llvm.ir.DoubleType`. This handle assumes the type conversion is
-    acceptable for the types provided; it only cares about the machine precision.
-    """
-    __source: Type
-    __target: Type
-
-    def __init__(self, source: Type, target: Type):
-        super().__init__()
-        assert isinstance(source.machine_type(), llvmlite.ir.IntType), "Source is not an integer type"
-        assert is_llvm_floating_point(target.machine_type()), "Target is not a floating point type"
-        self.__source = source
-        self.__target = target
-
-    def __str__(self) -> str:
-        return f"Convert {self.__source} → f{self.__target}"
-
-    def function_type(self) -> (Type, Sequence[Type]):
-        return self.__target, (self.__source,)
-
-    def generate_ir(self, builder: IRBuilder, args: Sequence[IRValue],
-                    global_addresses: Dict[str, ctypes.c_char_p]) -> IRValue:
-        (arg, ) = args
-        return builder.sitofp(arg, self.__target.machine_type())
-
-
-class FloatToIntegerHandle(Handle):
-    """
-    Converts an integer type to a floating point type
-
-    The source type must have a machine type of `llvm.ir.IntType` and the target must have a machine type of
-    `llvm.ir.HalfType`, `llvm.ir.FloatType`, or `llvm.ir.DoubleType`. This handle assumes the type conversion is
-    acceptable for the types provided; it only cares about the machine precision.
-    """
-    __source: Type
-    __target: Type
-
-    def __init__(self, source: Type, target: Type):
-        super().__init__()
-        assert is_llvm_floating_point(source.machine_type()), "Source is not a floating point type"
-        assert isinstance(target.machine_type(), llvmlite.ir.IntType), "Target is not an integer type"
-        self.__source = source
-        self.__target = target
-
-    def __str__(self) -> str:
-        return f"Convert f{self.__source} → {self.__target}"
-
-    def function_type(self) -> (Type, Sequence[Type]):
-        return self.__target, (self.__source,)
-
-    def generate_ir(self, builder: IRBuilder, args: Sequence[IRValue],
-                    global_addresses: Dict[str, ctypes.c_char_p]) -> IRValue:
-        (arg, ) = args
-        return builder.fptosi(arg, self.__target.machine_type())
-
-
-class BitCastHandle(Handle):
-    """
-    Performs an LLVM bit-cast to reinterpret the memory of one type as another.
-
-    This handle assumes the type conversion is acceptable for the types provided; it does not validate that conversion
-    will yield valid results.
-    """
-    __source: Type
-    __target: Type
-
-    def __init__(self, source: Type, target: Type):
-        super().__init__()
-        self.__source = source
-        self.__target = target
-
-    def __str__(self) -> str:
-        return f"BitCast {self.__source} → {self.__target}"
-
-    def function_type(self) -> (Type, Sequence[Type]):
-        return self.__target, (self.__target,)
-
-    def generate_ir(self, builder: IRBuilder, args: Sequence[IRValue],
-                    global_addresses: Dict[str, ctypes.c_char_p]) -> IRValue:
-        (arg, ) = args
-        return builder.bitcast(arg, self.__target.machine_type())
-
-
-class NoOpHandle(Handle):
-    """
-    Performs type conversion where the underlying types have the same machine type and need to conversion.
-
-    This handle assumes the type conversion is acceptable for the types provided; it does not validate that conversion
-    will yield valid results.
-    """
-    __source: Type
-    __target: Type
-
-    def __init__(self, source: Type, target: Type):
-        super().__init__()
-        assert source.machine_type() == target.machine_type(), "Machine types are not compatible."
-        self.__source = source
-        self.__target = target
-
-    def __str__(self) -> str:
-        return f"NoOp {self.__source} → {self.__target}"
-
-    def function_type(self) -> (Type, Sequence[Type]):
-        return self.__target, (self.__target,)
-
-    def generate_ir(self, builder: IRBuilder, args: Sequence[IRValue],
-                    global_addresses: Dict[str, ctypes.c_char_p]) -> IRValue:
-        (arg, ) = args
-        return arg
-
-
 class PreprocessArgumentHandle(Handle):
     """
     Preprocesses a single argument of a handle using another handle.
@@ -744,33 +534,6 @@ class IgnoreArgumentsHandle(Handle):
 
     def __str__(self) -> str:
         return f"Ignore {self.__extra_args} at {self.__index} in {self.__handle}"
-
-
-class SimpleConstantHandle(Handle):
-    """
-    A handle that returns a constant value
-
-    A handle with no arguments that returns a constant value. The constant value must be one that can be encoded in LLVM
-    IR, which includes integers, floating points, arrays of the former, and strings. The exact LLVM IR produce will
-    depend on the machine type.
-    """
-    __value: Any
-    __type: Type
-
-    def __init__(self, ty, value):
-        super().__init__()
-        self.__type = ty
-        self.__value = value
-
-    def function_type(self) -> (Type, Sequence[Type]):
-        return self.__type, ()
-
-    def generate_ir(self, builder: IRBuilder, args: Sequence[IRValue],
-                    global_addresses: Dict[str, ctypes.c_char_p]) -> IRValue:
-        return llvmlite.ir.Constant(self.__type.machine_type(), self.__value)
-
-    def __str__(self) -> str:
-        return f"Constant {self.__type} ({self.__value})"
 
 
 llvmlite.binding.initialize()

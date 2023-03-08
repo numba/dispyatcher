@@ -6,14 +6,16 @@ import llvmlite.ir
 from llvmlite.ir import IRBuilder, Value as IRValue
 
 import dispyatcher
-from dispyatcher import CallSite, IdentityHandle, SimpleConstantHandle, IgnoreArgumentsHandle, Type
+import dispyatcher.general
+from dispyatcher import CallSite, IdentityHandle, IgnoreArgumentsHandle, Type
+from dispyatcher.general import SimpleConstantHandle
 from dispyatcher.hashing import HashValueDispatcher, HashValueGuard
 
 
 class HashingTests(unittest.TestCase):
 
     def test_exact_ints(self):
-        i32 = dispyatcher.MachineType(llvmlite.ir.IntType(32))
+        i32 = dispyatcher.general.MachineType(llvmlite.ir.IntType(32))
         hashing = HashValueDispatcher(IdentityHandle(i32), ExactIntegerGuard())
         hashing.insert((7,), IgnoreArgumentsHandle(SimpleConstantHandle(i32, 42), 0, i32))
         callsite = CallSite(hashing)
@@ -22,7 +24,7 @@ class HashingTests(unittest.TestCase):
         self.assertEqual(callsite.cfunc(ctypes.c_int32(7)), 42)
 
     def test_lowbit_ints(self):
-        i32 = dispyatcher.MachineType(llvmlite.ir.IntType(32))
+        i32 = dispyatcher.general.MachineType(llvmlite.ir.IntType(32))
         hashing = HashValueDispatcher(IdentityHandle(i32), LowBitIntegerGuard())
         hashing.insert((7,), IgnoreArgumentsHandle(SimpleConstantHandle(i32, 42), 0, i32))
         hashing.insert((1,), IgnoreArgumentsHandle(SimpleConstantHandle(i32, 7), 0, i32))
@@ -34,7 +36,7 @@ class HashingTests(unittest.TestCase):
         self.assertEqual(callsite.cfunc(ctypes.c_int32(7)), 42)
 
     def test_lowbit_ints_2args(self):
-        i32 = dispyatcher.MachineType(llvmlite.ir.IntType(32))
+        i32 = dispyatcher.general.MachineType(llvmlite.ir.IntType(32))
         hashing = HashValueDispatcher(IgnoreArgumentsHandle(IdentityHandle(i32), 1, i32),
                                       LowBitIntegerGuard(),
                                       LowBitIntegerGuard())

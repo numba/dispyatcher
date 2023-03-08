@@ -5,6 +5,7 @@ import llvmlite.ir
 from llvmlite.ir import IRBuilder, Value as IRValue, Type as LLType, Block
 
 import dispyatcher
+import dispyatcher.general
 from dispyatcher import Type, Handle, llvm_type_to_ctype
 from dispyatcher.repacking import RepackingDispatcher, Repacker
 from dispyatcher.resource import ResourceHandle
@@ -289,7 +290,7 @@ class _GlobalInterpreterLockType(Type):
 
 GIL_TYPE = _GlobalInterpreterLockType()
 GIL_STATE_ENSURE_HANDLE = CFunctionHandle(GIL_TYPE, ctypes.pythonapi.PyGILState_Ensure)
-GIL_STATE_RELEASE_HANDLE = CFunctionHandle(dispyatcher.MachineType(llvmlite.ir.VoidType()),
+GIL_STATE_RELEASE_HANDLE = CFunctionHandle(dispyatcher.general.MachineType(llvmlite.ir.VoidType()),
                                            ctypes.pythonapi.PyGILState_Release, GIL_TYPE, ignore_return_type=True)
 
 
