@@ -4,7 +4,8 @@ from typing import Sequence, Dict, Any
 import llvmlite.ir
 from llvmlite.ir import Type as LLType, IRBuilder, Value as IRValue
 
-from dispyatcher import Type, is_llvm_floating_point, Handle
+from dispyatcher import Type, is_llvm_floating_point, Handle, llvm_type_to_ctype, Deref
+from dispyatcher.accessors import GetPointer
 
 
 class MachineType(Type):
@@ -54,6 +55,40 @@ class MachineType(Type):
 
     def machine_type(self) -> LLType:
         return self.__type
+
+
+class UncheckedArray(Type, Deref, GetPointer):
+    """
+    A high-level type representing a C-like array.
+
+    This array is a linear block of entries with no bounds checking or known length. It provides the same unsafe
+    behaviour as C; you're welcome. It is intended mostly for compatibility with C.
+    """
+    __element_type: LLType
+
+    def __init__(self, element_type: LLType):
+        self.__element_type = element_type
+
+    def __eq__(self, o: object) -> bool:
+        if isinstance(o, UncheckedArray):
+            return self.__element_type == o.__element_type
+        else:
+            return False
+
+    def __str__(self) -> str:
+        return f"Unchecked Array of {self.__element_type}"
+
+    def target(self) -> Type:
+        return MachineType(self.__element_type)
+
+    def target_pointer(self) -> Type:
+        return self
+
+    def ctypes_type(self):
+        return ctypes.POINTER(llvm_type_to_ctype(self.__element_type))
+
+    def machine_type(self) -> LLType:
+        return self.__element_type.as_pointer()
 
 
 class IntegerResizeHandle(Handle):
