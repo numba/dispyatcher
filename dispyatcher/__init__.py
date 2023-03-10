@@ -118,6 +118,38 @@ class Type:
         """
         pass
 
+    def as_pointer(self) -> "Type":
+        return Pointer(self)
+
+
+class Deref(Type):
+    def target(self) -> Type:
+        pass
+
+
+class Pointer(Deref):
+    __inner: Type
+
+    def __init__(self, inner: Type):
+        self.__inner = inner
+
+    def ctypes_type(self):
+        return ctypes.POINTER(self.__inner.ctypes_type())
+
+    def machine_type(self) -> LLType:
+        return self.__inner.machine_type().as_pointer()
+
+    def target(self) -> Type:
+        return self.__inner
+
+    def __eq__(self, o: object) -> bool:
+        if isinstance(o, Pointer):
+            return o.__inner == self.__inner
+        return False
+
+    def __str__(self) -> str:
+        return f"Pointer to {self.__inner}"
+
 
 class InvalidationListener:
     """
@@ -275,6 +307,19 @@ class Handle(InvalidationTarget):
         :return: the value that is the output of the handle
         """
         pass
+
+    def deref(self, target_type: Union[Type, None] = None) -> "Handle":
+        """
+        Generate a new handle that calls this handle, whose output must be a pointer, dereferences it and returns that
+        value.
+
+        See the `DerefPointer` handle for details on how the typing work.
+        :return: the new handle
+        """
+        (ret_type, _) = self.function_type()
+        if not isinstance(ret_type, Deref):
+            raise TypeError(f"Don't know how to dereference f{ret_type}")
+        return self + DerefPointer(ret_type, target_type)
 
 
 _call_site_id = 0
@@ -536,6 +581,52 @@ class IgnoreArgumentsHandle(Handle):
         return f"Ignore {self.__extra_args} at {self.__index} in {self.__handle}"
 
 
+class DerefPointer(Handle):
+    """
+    Dereferences a pointer and returns the value
+
+    The machine concept of a pointer is well-understood, but that does not make for a good type system. For instance,
+    C's `FILE*` is a pointer, but it should never be de-referenced as the structure inside `FILE` should be an opaque
+    implementation detail. The compromise that is made is that any `Type` can have an LLVM type that is a pointer, but
+    the type system built on handles doesn't strictly _know_ that it is a pointer. That is, just because a type has an
+    LLVM type that is a pointer, does not require that handles be allowed to dereference it. If a type wants to be
+    dereferencable, it should extend `Deref` and provide the high-level type of its contents.
+
+    This handle can operate in two ways: given a type that implement `Deref`, it can automatically figure out the
+    corresponding return type. It can also be used in a coercive mode where both source and target types are provided
+    and it only checks if the LLVM types are compatible.
+    """
+    __container_type: Type
+    __target_type: Type
+
+    def __init__(self, container_type: Type, target_ty: Union[Type, None] = None):
+        super().__init__()
+        self.__container_type = container_type
+        if target_ty is None:
+            if isinstance(container_type, Deref):
+                self.__target_type = container_type.target()
+            else:
+                raise TypeError("Container type does not implement deref and no target type is not provided")
+        else:
+            self.__target_type = target_ty
+            container_llvm_type = container_type.machine_type()
+            assert isinstance(container_llvm_type, PointerType),\
+                f"Container type must be a pointer but got {container_llvm_type}"
+            assert container_llvm_type.pointee == target_ty.machine_type(),\
+                f"Container points to {container_llvm_type.pointee} but target type is {target_ty.machine_type()}"
+
+    def generate_ir(self, builder: IRBuilder, args: Sequence[IRValue],
+                    global_addresses: Dict[str, ctypes.c_char_p]) -> IRValue:
+        return builder.load(args[0])
+
+    def function_type(self) -> (Type, Sequence[Type]):
+        return self.__target_type, (self.__container_type,)
+
+    def __str__(self) -> str:
+        return f"Deref {self.__container_type} → {self.__target_type}"
+
+
 llvmlite.binding.initialize()
 llvmlite.binding.initialize_native_target()
 llvmlite.binding.initialize_native_asmprinter()
+
