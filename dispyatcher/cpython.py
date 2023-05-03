@@ -2,19 +2,107 @@ import ctypes
 from typing import Sequence, Dict, Union, List, NamedTuple, Callable
 
 import llvmlite.ir
-from llvmlite.ir import IRBuilder, Value as IRValue, Type as LLType, Block
+from llvmlite.ir import IRBuilder, Value as IRValue, Type as LLType
 
-import dispyatcher
 import dispyatcher.general
-from dispyatcher import Type, Handle, llvm_type_to_ctype, PreprocessArgumentHandle
+import llvmlite.ir.types
+from dispyatcher import Type, Handle, llvm_type_to_ctype, F, IdentityHandle
 from dispyatcher.accessors import GetElementPointer
-from dispyatcher.general import MachineType
+from dispyatcher.general import MachineType, CurrentProcessFunctionHandle
 from dispyatcher.permute import implode_args
-from dispyatcher.repacking import RepackingDispatcher, Repacker
+from dispyatcher.repacking import RepackingDispatcher, Repacker, RepackingFlow
 from dispyatcher.resource import ResourceHandle
 
+INT_RESULT_TYPE = llvmlite.ir.types.IntType(ctypes.sizeof(ctypes.c_int) * 8)
+SIZE_T_TYPE = llvmlite.ir.types.IntType(ctypes.sizeof(ctypes.c_size_t) * 8)
 
-class _PyObjectType(Type):
+
+class PythonControlFlow(dispyatcher.ControlFlow):
+    """
+    A control flow that knows how to generate Python exceptions
+    """
+    __return_type: LLType
+
+    def __init__(self, builder: IRBuilder, return_type: LLType):
+        super().__init__(builder)
+        self.__return_type = return_type
+
+    def throw_exception(self, error: str, message: str) -> None:
+        """
+        Throw an exception and stop the current control flow
+        :param error: the name of the exception (only the built-in exceptions such as `ValueError`)
+        :param message: the message to put into the exception
+        """
+        set_string = self.use_native_function("PyErr_SetString",
+                                              llvmlite.ir.VoidType(),
+                                              (PY_OBJECT_TYPE.machine_type(), llvmlite.ir.IntType(8).as_pointer()))
+        exception_name = "PyExc_" + error
+        exception = self.use_native_global(exception_name, PY_OBJECT_TYPE.machine_type())
+        message_bytes = bytearray(message.encode('utf-8'))
+        message_bytes.append(0)
+        message_type = llvmlite.ir.ArrayType(llvmlite.ir.IntType(8), len(message_bytes))
+        message_value = llvmlite.ir.GlobalVariable(self.builder.module,
+                                                   message_type,
+                                                   self.builder.module.get_unique_name("exception"))
+        message_value.initializer = message_type(message_bytes)
+        self.builder.call(set_string,
+                          (self.builder.load(exception),
+                           self.builder.bitcast(message_value, llvmlite.ir.IntType(8).as_pointer())))
+        self.unwind()
+
+    def unwind(self) -> None:
+        """
+        Unwind the current cleanup and return a junk value.
+
+        This is helpful if the callee has set the Python exception state.
+        """
+        self._cleanup()
+        self.builder.ret(self.__return_type(None))
+
+    def check_return_code(self, result: IRValue, ok_value: int, error: str, message: str) -> None:
+        """
+        Many CPython functions return an integer for a true/false/exception case. This is a helper to build the flow
+        logic for these functions
+        :param result: the result returned by the function
+        :param ok_value: the return value that signals the happy path
+        :param error: the exception name when the function is on the unhappy non-exception path
+        :param message: the message to raise on the unhappy non-exception path
+        """
+        fail_block = self.builder.append_basic_block("result_fail")
+        ok_block = self.builder.append_basic_block("result_ok")
+        exception_block = self.builder.append_basic_block("result_exception")
+        self.builder.switch(result, fail_block)\
+            .add_case(llvmlite.ir.Constant(INT_RESULT_TYPE, ok_value), ok_block)\
+            .add_case(llvmlite.ir.Constant(INT_RESULT_TYPE, -1), exception_block)
+
+        self.builder.position_at_start(fail_block)
+        self.throw_exception(error, message)
+        self.builder.position_at_start(exception_block)
+        self.unwind()
+        self.builder.position_at_start(ok_block)
+
+
+class PythonControlFlowType(dispyatcher.ControlFlowType):
+    """
+    The control flow that allows CPython exceptions to be thrown
+    """
+
+    def create_flow(self, builder: IRBuilder, return_type: Type, arg_types: Sequence[Type]) -> F:
+        return PythonControlFlow(builder, return_type.machine_type())
+
+    def ctypes_function(self, return_type: Type, arg_types: Sequence[Type]):
+        return ctypes.PYFUNCTYPE(return_type.ctypes_type(), *(a.ctypes_type() for a in arg_types))
+
+
+class PyObjectType(Type):
+    """
+    The type of a Python object, using the `PyObject*` at the machine level, that also knows a Python type and can
+    insert appropriate type checks during handle conversions.
+    """
+    __type: type
+
+    def __init__(self, ty: type):
+        self.__type = ty
 
     def ctypes_type(self):
         return ctypes.py_object
@@ -23,11 +111,28 @@ class _PyObjectType(Type):
         return llvmlite.ir.PointerType(llvmlite.ir.IntType(8))
 
     def __str__(self) -> str:
-        return "PyObject"
+        return f"PyObject({self.__type})"
+
+    def into_type(self, target: Type) -> Union[Handle, None]:
+        if isinstance(target, PyObjectType):
+            if issubclass(target.__type, self.__type):
+                return IdentityHandle(target, self)
+            else:
+                return CheckedCast(self.__type, target.__type)
+
+    @property
+    def python_type(self) -> type:
+        return self.__type
+
+    def __repr__(self) -> str:
+        return f"dispyatcher.cpython.PyObjectType({repr(self.__type)})"
 
 
-PY_OBJECT_TYPE = _PyObjectType()
+PY_OBJECT_TYPE = PyObjectType(object)
 """ The type for an unknown Python object (in C, `PyObject*`) """
+
+PY_DICT_TYPE = PyObjectType(dict)
+""" The type for a Python dictionary """
 
 
 class CFunctionHandle(Handle):
@@ -67,17 +172,127 @@ class CFunctionHandle(Handle):
     def function_type(self) -> (Type, Sequence[Type]):
         return self.__ret, self.__args
 
-    def generate_ir(self, builder: IRBuilder, args: Sequence[IRValue],
-                    global_addresses: Dict[str, ctypes.c_char_p]) -> IRValue:
-        fn_name = builder.module.get_unique_name("cfunc")
-        fn_type = llvmlite.ir.FunctionType(self.__ret.machine_type(), (arg.machine_type() for arg in self.__args))
-        fn = llvmlite.ir.GlobalVariable(builder.module, fn_type.as_pointer(), fn_name)
-        fn.initializer = llvmlite.ir.Constant(fn_type.as_pointer(), llvmlite.ir.Undefined)
-        global_addresses[fn_name] = ctypes.c_char_p.from_address(ctypes.addressof(self.__cfunc))
-        return builder.call(builder.load(fn), args)
+    def generate_ir(self, flow: dispyatcher.F, args: Sequence[IRValue]) -> IRValue:
+        fn_name = flow.builder.module.get_unique_name("cfunc")
+        fn_type = llvmlite.ir.FunctionType(self.__ret.machine_type(), [arg.machine_type() for arg in self.__args])
+        fn = flow.upsert_global_binding(fn_name, fn_type, ctypes.c_char_p.from_address(ctypes.addressof(self.__cfunc)))
+        return flow.builder.call(flow.builder.load(fn), args)
 
     def __str__(self) -> str:
-        return f"CType {self.__cfunc}"
+        return f"CType {self.__cfunc}({', '.join(str(a) for a in self.__args)}) → {self.__ret}"
+
+
+class ThrowIfNull(Handle):
+    """
+    A handle that throws an exception if the value is null.
+    """
+    error: str
+    __type: Type
+
+    def __init__(self, ty: Type, error: str = "Value cannot be null"):
+        """
+        Create a new handle which checks if the argument is not null and raises an exception if it is null.
+        :param ty: the type, which must have an LLVM type that is a pointer
+        :param error: the error message to raise
+        """
+        super().__init__()
+        self.__type = ty
+        self.error = error
+        assert isinstance(ty.machine_type(), llvmlite.ir.PointerType), "Type must be a pointer"
+
+    def function_type(self) -> (Type, Sequence[Type]):
+        return self.__type, (self.__type,)
+
+    def generate_ir(self, flow: F, args: Sequence[IRValue]) -> IRValue:
+        (value, ) = args
+        fail_block = flow.builder.append_basic_block('py_non_null_fail')
+        success_block = flow.builder.append_basic_block('py_non_null_success')
+        comparison = flow.builder.icmp_unsigned('==', value, self.__type.machine_type()(None))
+        flow.builder.cbranch(comparison, fail_block, success_block)
+        flow.builder.position_at_start(fail_block)
+        flow.throw_exception("ValueError", self.error)
+        flow.builder.position_at_start(success_block)
+        return value
+
+    def __str__(self) -> str:
+        return f"ThrowIfNull({self.__type}, {self.error})"
+
+
+class CheckedCast(Handle[PythonControlFlow]):
+    """
+    Check a Python type is an instance of a class provided
+
+    This is meant to be a type assertion. It's named for the JVM `CHECKEDCAST` instruction, which Python doesn't have.
+    """
+    __ret: type
+    __arg: type
+
+    def __init__(self, arg: type, ret: type):
+        """
+        Create a new check handle
+        :param arg: the argument type as a Python type (not a dispyatcher or LLVM type)
+        :param ret: the return type as a Python type (not a dispyatcher or LLVM type)
+        """
+        super().__init__()
+        self.__ret = ret
+        self.__arg = arg
+
+    def function_type(self) -> (Type, Sequence[Type]):
+        return PyObjectType(self.__ret), (PyObjectType(self.__arg),)
+
+    def generate_ir(self, flow: PythonControlFlow, args: Sequence[IRValue]) -> IRValue:
+        (arg,) = args
+        return_type = flow.upsert_global_binding(flow.builder.module.get_unique_name("checked_cast"),
+                                                 PY_OBJECT_TYPE.machine_type(),
+                                                 ctypes.c_char_p.from_address(
+                                                     ctypes.addressof(ctypes.py_object(self.__ret))))
+        check = flow.use_native_function("PyObject_IsInstance",
+                                         INT_RESULT_TYPE,
+                                         (PY_OBJECT_TYPE.machine_type(), PY_OBJECT_TYPE.machine_type()))
+        flow.check_return_code(flow.builder.call(flow.builder.load(check), (arg, return_type)),
+                               1, "TypeError", f"Value of type {self.__arg} cannot be cast to {self.__ret}.")
+        return arg
+
+    def __str__(self) -> str:
+        return f"CheckedCast({self.__arg} → {self.__ret})"
+
+
+class BooleanResultHandle(Handle[PythonControlFlow]):
+    """
+    A handle that takes an integer value that should be Boolean, but can be -1 for an exception
+    """
+    __arg: Type
+
+    def __init__(self, input_type: Type):
+        """
+        Creates a new Boolean result handle.
+
+        :param input_type: the result type (normally a platform-specific sized int)
+        """
+        super().__init__()
+        self.__arg = input_type
+        assert isinstance(input_type.machine_type(), llvmlite.ir.IntType),\
+            f"Boolean result check requires an integer type, but {input_type} provided"
+
+    def function_type(self) -> (Type, Sequence[Type]):
+        return MachineType(llvmlite.ir.IntType(1)), (self.__arg,)
+
+    def generate_ir(self, flow: PythonControlFlow, args: Sequence[IRValue]) -> IRValue:
+        (result,) = args
+        exception_block = flow.builder.append_basic_block("result_exception")
+        bool_block = flow.builder.append_basic_block("result_bool")
+        flow.builder.cbranch(flow.builder.icmp_signed("<=", result, llvmlite.ir.Constant(INT_RESULT_TYPE, -1)),
+                             exception_block, bool_block)
+
+        flow.builder.position_at_start(exception_block)
+        flow.unwind()
+
+        flow.builder.position_at_start(bool_block)
+
+        return flow.builder.icmp_signed('!=', result, llvmlite.ir.Constant(INT_RESULT_TYPE, 0))
+
+    def __str__(self) -> str:
+        return f"BooleanResult {self.__arg}"
 
 
 class TupleArguments(NamedTuple):
@@ -183,50 +398,30 @@ class _TupleUnpacker(Repacker):
     def output_count(self) -> int:
         return len(self.__elements)
 
-    def generate_ir(self, builder: IRBuilder, args: Sequence[IRValue], failure_block: Block,
-                    global_addresses: Dict[str, ctypes.c_char_p]) -> Sequence[IRValue]:
+    def generate_ir(self, flow: RepackingFlow, args: Sequence[IRValue]) -> Sequence[IRValue]:
         i8 = llvmlite.ir.IntType(8)
         i32 = llvmlite.ir.IntType(32)
         (arg, ) = args
         outputs = []
         fmt_code = "".join(element.format_code() for element in self.__elements).encode("utf-8") + b"\x00"
         fmt_const = llvmlite.ir.Constant(llvmlite.ir.ArrayType(i8, len(fmt_code)), bytearray(fmt_code))
-        fmt_global = llvmlite.ir.GlobalVariable(builder.module, fmt_const.type,
-                                                builder.module.get_unique_name("tuple_format"))
+        fmt_global = llvmlite.ir.GlobalVariable(flow.builder.module, fmt_const.type,
+                                                flow.builder.module.get_unique_name("tuple_format"))
         fmt_global.initializer = fmt_const
         fmt_global.global_constant = True
-        unpack_args = [arg, builder.bitcast(fmt_global, i8.as_pointer())]
+        unpack_args = [arg, flow.builder.bitcast(fmt_global, i8.as_pointer())]
         for element in self.__elements:
-            element_args = element.unpack(builder)
+            element_args = element.unpack(flow.builder)
             outputs.append(element_args.call_args)
             unpack_args.extend(element_args.unpack_args)
 
-        if "PyArg_ParseTuple" in builder.module.globals:
-            fn = builder.module.globals["PyArg_ParseTuple"]
-        else:
-            fn_type = llvmlite.ir.FunctionType(i32,
-                                               [PY_OBJECT_TYPE.machine_type(), llvmlite.ir.IntType(8).as_pointer()],
-                                               var_arg=True)
-            fn = llvmlite.ir.GlobalVariable(builder.module, fn_type.as_pointer(), "PyArg_ParseTuple")
-            fn.initializer = llvmlite.ir.Constant(fn_type.as_pointer(), llvmlite.ir.Undefined)
-            global_addresses["PyArg_ParseTuple"] = ctypes.c_char_p.from_address(
-                ctypes.addressof(ctypes.pythonapi.PyArg_ParseTuple))
-        comparison = builder.icmp_unsigned("==", builder.call(builder.load(fn), unpack_args), i32(0))
-        success_block = builder.append_basic_block("tuple_unpacked")
-        builder.cbranch(comparison, failure_block, success_block)
+        fn = flow.use_native_function("PyArg_ParseTuple", i32, [PY_OBJECT_TYPE.machine_type(), i8.as_pointer()],
+                                      var_arg=True)
+        unpack_result = flow.builder.call(fn, unpack_args)
+        clear_fn = flow.use_native_function("PyErr_Clear", llvmlite.ir.VoidType(), [])
+        flow.builder.call(clear_fn, [])
+        flow.alternate_on_bool(flow.builder.icmp_unsigned("!=", unpack_result, i32(0)))
 
-        builder.position_at_end(failure_block)
-        if "PyErr_Clear" in builder.module.globals:
-            clear_fn = builder.module.globals["PyErr_Clear"]
-        else:
-            clear_fn_type = llvmlite.ir.FunctionType(llvmlite.ir.VoidType(), [])
-            clear_fn = llvmlite.ir.GlobalVariable(builder.module, clear_fn_type.as_pointer(), "PyErr_Clear")
-            clear_fn.initializer = llvmlite.ir.Constant(clear_fn_type.as_pointer(), llvmlite.ir.Undefined)
-            global_addresses["PyErr_Clear"] = ctypes.c_char_p.from_address(
-                ctypes.addressof(ctypes.pythonapi.PyErr_Clear))
-        builder.call(builder.load(clear_fn), [])
-
-        builder.position_at_end(success_block)
         output_values = [o for output in outputs for o in output()]
         return output_values
 
@@ -260,7 +455,7 @@ PY_OBJECT_TUPLE_ELEMENT = SimpleTupleElement("O", PY_OBJECT_TYPE.machine_type())
 class _PyComplexType(Type, TupleElement):
 
     def ctypes_type(self):
-        return ctypes.py_object
+        return None
 
     def machine_type(self) -> LLType:
         return llvmlite.ir.LiteralStructType((llvmlite.ir.DoubleType(), llvmlite.ir.DoubleType()))
@@ -279,12 +474,87 @@ class _PyComplexType(Type, TupleElement):
         return TupleArguments(unpack_args=(alloc,), call_args=lambda: (builder.load(alloc),))
 
 
+class IncrementReference(Handle):
+    __type: Type
+
+    def __init__(self, ty: Union[type, PyObjectType]):
+        super().__init__()
+        if isinstance(ty, PyObjectType):
+            self.__type = ty
+        elif isinstance(ty, type):
+            self.__type = PyObjectType(ty)
+        else:
+            raise TypeError(f"Don't know how to build a reference count change for {ty}")
+
+    def function_type(self) -> (Type, Sequence[Type]):
+        return self.__type, (self.__type,)
+
+    def generate_ir(self, flow: F, args: Sequence[IRValue]) -> IRValue:
+        (arg, ) = args
+        inc_block = flow.builder.append_basic_block("incref_nonnull")
+        end_block = flow.builder.append_basic_block("incref_end")
+        is_some = flow.builder.icmp_unsigned('!=', arg, self.__type.machine_type()(None))
+        flow.builder.cbranch(is_some, inc_block, end_block)
+
+        flow.builder.position_at_start(inc_block)
+
+        inc_ref = flow.use_native_function("Py_IncRef", llvmlite.ir.VoidType(), (PY_OBJECT_TYPE.machine_type(),))
+        flow.builder.call(inc_ref, (arg,))
+        flow.builder.branch(end_block)
+        flow.builder.position_at_start(end_block)
+        return arg
+
+    def __str__(self) -> str:
+        return f"IncRef({self.__type})"
+
+
+class NullToNone(Handle):
+    __type: Type
+
+    def __init__(self, ty: Union[type, PyObjectType]):
+        super().__init__()
+        if isinstance(ty, PyObjectType):
+            self.__type = ty
+        elif isinstance(ty, type):
+            self.__type = PyObjectType(ty)
+        else:
+            raise TypeError(f"Don't know how to build a reference count change for {ty}")
+
+    def function_type(self) -> (Type, Sequence[Type]):
+        return self.__type, (self.__type,)
+
+    def generate_ir(self, flow: F, args: Sequence[IRValue]) -> IRValue:
+        (arg,) = args
+        none_block = flow.builder.append_basic_block("none")
+        end_block = flow.builder.append_basic_block("end")
+        original_block = flow.builder.block
+        is_some = flow.builder.icmp_unsigned('!=', arg, self.__type.machine_type()(None))
+        flow.builder.cbranch(is_some, end_block, none_block)
+
+        flow.builder.position_at_start(none_block)
+
+        none = flow.use_native_global("_Py_NoneStruct", self.__type.machine_type().pointee)
+        inc_ref = flow.use_native_function("Py_IncRef", llvmlite.ir.VoidType(), (PY_OBJECT_TYPE.machine_type(),))
+        flow.builder.call(inc_ref, (none,))
+        flow.builder.branch(end_block)
+        flow.builder.position_at_start(end_block)
+        result = flow.builder.phi(self.__type.machine_type(), "none_to_null")
+        result.add_incoming(arg, original_block)
+        result.add_incoming(none, none_block)
+        return result
+
+    def __str__(self) -> str:
+        return f"NullToNone({self.__type})"
+
+
 PY_COMPLEX_TYPE = _PyComplexType()
 """ The type for complex number """
 
 
-PY_COMPLEX_REAL = GetElementPointer(PY_COMPLEX_TYPE, 0, MachineType(llvmlite.ir.DoubleType()))
-PY_COMPLEX_IMAG = GetElementPointer(PY_COMPLEX_TYPE, 1, MachineType(llvmlite.ir.DoubleType()))
+PY_COMPLEX_REAL = GetElementPointer(PY_COMPLEX_TYPE, 0,
+                                    dispyatcher.Pointer(MachineType(llvmlite.ir.DoubleType()))).deref()
+PY_COMPLEX_IMAG = GetElementPointer(PY_COMPLEX_TYPE, 1,
+                                    dispyatcher.Pointer(MachineType(llvmlite.ir.DoubleType()))).deref()
 
 
 def implode_complex_number(handle: Handle, index: int) -> Handle:
@@ -325,10 +595,18 @@ class _GlobalInterpreterLockType(Type):
         return "PythonGIL"
 
 
+PY_DICT_NEW = CurrentProcessFunctionHandle(PY_DICT_TYPE, "PyDict_New")
+PY_DICT_CLEAR = CurrentProcessFunctionHandle(PY_DICT_TYPE, "PyDict_Clear")
+PY_DICT_CONTAINS = CurrentProcessFunctionHandle(MachineType(INT_RESULT_TYPE), "PyDict_Contains",
+                                                PY_DICT_TYPE, PY_OBJECT_TYPE) + BooleanResultHandle
+PY_DICT_COPY = CurrentProcessFunctionHandle(PY_DICT_TYPE, "PyDict_Copy", PY_DICT_TYPE)
+PY_DICT_GET_ITEM = CurrentProcessFunctionHandle(PY_OBJECT_TYPE, "PyDict_GetItem", PY_DICT_TYPE, PY_OBJECT_TYPE)
+PY_DICT_SIZE = CurrentProcessFunctionHandle(MachineType(SIZE_T_TYPE), "PyDict_Size", PY_DICT_TYPE)
+
 GIL_TYPE = _GlobalInterpreterLockType()
-GIL_STATE_ENSURE_HANDLE = CFunctionHandle(GIL_TYPE, ctypes.pythonapi.PyGILState_Ensure)
-GIL_STATE_RELEASE_HANDLE = CFunctionHandle(dispyatcher.general.MachineType(llvmlite.ir.VoidType()),
-                                           ctypes.pythonapi.PyGILState_Release, GIL_TYPE, ignore_return_type=True)
+GIL_STATE_ENSURE_HANDLE = CurrentProcessFunctionHandle(GIL_TYPE, "PyGILState_Ensure")
+GIL_STATE_RELEASE_HANDLE = CurrentProcessFunctionHandle(dispyatcher.general.MachineType(llvmlite.ir.VoidType()),
+                                                        "PyGILState_Release", GIL_TYPE)
 
 
 def with_gil(inner: Handle) -> Handle:

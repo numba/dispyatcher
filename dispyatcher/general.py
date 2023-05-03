@@ -1,10 +1,10 @@
 import ctypes
-from typing import Sequence, Dict, Any
+from typing import Sequence, Any, Union
 
 import llvmlite.ir
-from llvmlite.ir import Type as LLType, IRBuilder, Value as IRValue
+from llvmlite.ir import Type as LLType, Value as IRValue
 
-from dispyatcher import Type, is_llvm_floating_point, Handle, llvm_type_to_ctype, Deref
+from dispyatcher import Type, is_llvm_floating_point, Handle, llvm_type_to_ctype, Deref, F
 from dispyatcher.accessors import GetPointer
 
 
@@ -32,7 +32,7 @@ class MachineType(Type):
     def __str__(self) -> str:
         return str(self.__type)
 
-    def into_type(self, target):
+    def into_type(self, target: Type) -> Union[Handle, None]:
         if isinstance(target, MachineType):
             self_is_int = isinstance(self.__type, llvmlite.ir.IntType)
             self_is_fp = is_llvm_floating_point(self.__type)
@@ -50,14 +50,14 @@ class MachineType(Type):
                 return BitCastHandle(self, target)
         return None
 
-    def from_type(self, source):
+    def from_type(self, source: Type) -> Union[Handle, None]:
         return None
 
     def machine_type(self) -> LLType:
         return self.__type
 
 
-class UncheckedArray(Type, Deref, GetPointer):
+class UncheckedArray(Deref, GetPointer):
     """
     A high-level type representing a C-like array.
 
@@ -114,13 +114,12 @@ class IntegerResizeHandle(Handle):
     def function_type(self) -> (Type, Sequence[Type]):
         return self.__target, (self.__source,)
 
-    def generate_ir(self, builder: IRBuilder, args: Sequence[IRValue],
-                    global_addresses: Dict[str, ctypes.c_char_p]) -> IRValue:
+    def generate_ir(self, flow: F, args: Sequence[IRValue]) -> IRValue:
         (arg, ) = args
         if self.__source.machine_type().width > self.__target.machine_type().width:
-            return builder.trunc(arg, self.__target.machine_type())
+            return flow.builder.trunc(arg, self.__target.machine_type())
         if self.__source.machine_type().width < self.__target.machine_type().width:
-            return builder.sext(arg, self.__target.machine_type())
+            return flow.builder.sext(arg, self.__target.machine_type())
         return arg
 
 
@@ -148,8 +147,7 @@ class FloatResizeHandle(Handle):
     def function_type(self) -> (Type, Sequence[Type]):
         return self.__target, (self.__source,)
 
-    def generate_ir(self, builder: IRBuilder, args: Sequence[IRValue],
-                    global_addresses: Dict[str, ctypes.c_char_p]) -> IRValue:
+    def generate_ir(self, flow: F, args: Sequence[IRValue]) -> IRValue:
         def width(ty: llvmlite.ir.Type) -> int:
             if isinstance(ty, llvmlite.ir.HalfType):
                 return 16
@@ -163,9 +161,9 @@ class FloatResizeHandle(Handle):
         target_machine_type = self.__target.machine_type()
         target_width = width(target_machine_type)
         if source_width > target_width:
-            return builder.fptrunc(arg, self.__target.machine_type())
+            return flow.builder.fptrunc(arg, self.__target.machine_type())
         if source_width < target_width:
-            return builder.fpext(arg, self.__target.machine_type())
+            return flow.builder.fpext(arg, self.__target.machine_type())
         return arg
 
 
@@ -193,10 +191,9 @@ class IntegerToFloatHandle(Handle):
     def function_type(self) -> (Type, Sequence[Type]):
         return self.__target, (self.__source,)
 
-    def generate_ir(self, builder: IRBuilder, args: Sequence[IRValue],
-                    global_addresses: Dict[str, ctypes.c_char_p]) -> IRValue:
+    def generate_ir(self, flow: F, args: Sequence[IRValue]) -> IRValue:
         (arg, ) = args
-        return builder.sitofp(arg, self.__target.machine_type())
+        return flow.builder.sitofp(arg, self.__target.machine_type())
 
 
 class FloatToIntegerHandle(Handle):
@@ -223,10 +220,9 @@ class FloatToIntegerHandle(Handle):
     def function_type(self) -> (Type, Sequence[Type]):
         return self.__target, (self.__source,)
 
-    def generate_ir(self, builder: IRBuilder, args: Sequence[IRValue],
-                    global_addresses: Dict[str, ctypes.c_char_p]) -> IRValue:
+    def generate_ir(self, flow: F, args: Sequence[IRValue]) -> IRValue:
         (arg, ) = args
-        return builder.fptosi(arg, self.__target.machine_type())
+        return flow.builder.fptosi(arg, self.__target.machine_type())
 
 
 class BitCastHandle(Handle):
@@ -250,10 +246,9 @@ class BitCastHandle(Handle):
     def function_type(self) -> (Type, Sequence[Type]):
         return self.__target, (self.__target,)
 
-    def generate_ir(self, builder: IRBuilder, args: Sequence[IRValue],
-                    global_addresses: Dict[str, ctypes.c_char_p]) -> IRValue:
+    def generate_ir(self, flow: F, args: Sequence[IRValue]) -> IRValue:
         (arg, ) = args
-        return builder.bitcast(arg, self.__target.machine_type())
+        return flow.builder.bitcast(arg, self.__target.machine_type())
 
 
 class NoOpHandle(Handle):
@@ -278,8 +273,7 @@ class NoOpHandle(Handle):
     def function_type(self) -> (Type, Sequence[Type]):
         return self.__target, (self.__target,)
 
-    def generate_ir(self, builder: IRBuilder, args: Sequence[IRValue],
-                    global_addresses: Dict[str, ctypes.c_char_p]) -> IRValue:
+    def generate_ir(self, flow: F, args: Sequence[IRValue]) -> IRValue:
         (arg, ) = args
         return arg
 
@@ -303,9 +297,36 @@ class SimpleConstantHandle(Handle):
     def function_type(self) -> (Type, Sequence[Type]):
         return self.__type, ()
 
-    def generate_ir(self, builder: IRBuilder, args: Sequence[IRValue],
-                    global_addresses: Dict[str, ctypes.c_char_p]) -> IRValue:
+    def generate_ir(self, flow: F, args: Sequence[IRValue]) -> IRValue:
         return llvmlite.ir.Constant(self.__type.machine_type(), self.__value)
 
     def __str__(self) -> str:
         return f"Constant {self.__type} ({self.__value})"
+
+
+class CurrentProcessFunctionHandle(Handle):
+    """
+    A handle from function that exists in the current running process
+    """
+    __return: Type
+    __args: Sequence[Type]
+    __name: str
+
+    def __init__(self, return_type: Type, name: str, *args: Type):
+        super().__init__()
+        self.__name = name
+        self.__return = return_type
+        self.__args = args
+
+    def function_type(self) -> (Type, Sequence[Type]):
+        return self.__return, self.__args
+
+    def generate_ir(self, flow: F, args: Sequence[IRValue]) -> IRValue:
+        fn = flow.use_native_function(self.__name,
+                                      self.__return.machine_type(),
+                                      [a.machine_type() for a in self.__args])
+        return flow.builder.call(fn, args)
+
+    def __str__(self) -> str:
+        return f"{self.__name}({', '.join(str(a) for a in self.__args)}) → {self.__return}"
+

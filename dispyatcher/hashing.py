@@ -1,10 +1,9 @@
-import ctypes
 from typing import List, Sequence, Dict, Any, Iterable, Tuple, Union
 
 import llvmlite.ir
 from llvmlite.ir import IRBuilder, Value as IRValue
 
-from dispyatcher import Handle, Type
+from dispyatcher import Handle, Type, F
 
 
 class HashValueGuard:
@@ -185,45 +184,44 @@ class HashValueDispatcher(Handle):
     def function_type(self) -> (Type, Sequence[Type]):
         return self.__fallback.function_type()
 
-    def generate_ir(self, builder: IRBuilder, args: Sequence[IRValue],
-                    global_addresses: Dict[str, ctypes.c_char_p]) -> IRValue:
+    def generate_ir(self, flow: F, args: Sequence[IRValue]) -> IRValue:
         (self_ret_type, self_arg_types) = self.__fallback.function_type()
 
         value = llvmlite.ir.Constant(llvmlite.ir.IntType(32), 1)
         for index, (guard, arg_value) in enumerate(zip(self.__guards, args)):
             if guard:
-                intermediate = guard.generate_hash_ir(builder, arg_value)
-                value = builder.mul(value, intermediate)
+                intermediate = guard.generate_hash_ir(flow.builder, arg_value)
+                value = flow.builder.mul(value, intermediate)
 
-        fallback_block = builder.append_basic_block("hash_fallback")
-        final_block = builder.append_basic_block("hash_final")
-        switch = builder.switch(value, fallback_block)
+        fallback_block = flow.builder.append_basic_block("hash_fallback")
+        final_block = flow.builder.append_basic_block("hash_final")
+        switch = flow.builder.switch(value, fallback_block)
         results = []
         for hash_value, handles in self.__dispatch.items():
-            current_block = builder.append_basic_block()
+            current_block = flow.builder.append_basic_block()
             switch.add_case(llvmlite.ir.Constant(llvmlite.ir.IntType(32), hash_value), current_block)
-            builder.position_at_end(current_block)
+            flow.builder.position_at_end(current_block)
             for index, (handle, key) in enumerate(handles):
-                next_block = fallback_block if index == len(handles) - 1 else builder.append_basic_block(
+                next_block = fallback_block if index == len(handles) - 1 else flow.builder.append_basic_block(
                     f"hash_{hash_value}_idx{index}")
                 for arg_idx, (key_value, arg_value, guard) in enumerate(zip(key, args, self.__guards)):
                     if guard:
-                        comparison = guard.generate_check_ir(key_value, builder, arg_value)
-                        block = builder.append_basic_block(f"hash{hash_value}_idx{index}_arg{arg_idx}")
-                        builder.cbranch(comparison, block, next_block)
-                        builder.position_at_end(block)
+                        comparison = guard.generate_check_ir(key_value, flow.builder, arg_value)
+                        block = flow.builder.append_basic_block(f"hash{hash_value}_idx{index}_arg{arg_idx}")
+                        flow.builder.cbranch(comparison, block, next_block)
+                        flow.builder.position_at_end(block)
 
-                result = handle.generate_ir(builder, args, global_addresses)
-                results.append((result, builder.basic_block))
-                builder.branch(final_block)
-                builder.position_at_end(next_block)
-        builder.position_at_end(fallback_block)
-        result = self.__fallback.generate_ir(builder, args, global_addresses)
-        results.append((result, builder.basic_block))
-        builder.branch(final_block)
+                result = flow.call(handle, args)
+                results.append((result, flow.builder.basic_block))
+                flow.builder.branch(final_block)
+                flow.builder.position_at_end(next_block)
+        flow.builder.position_at_end(fallback_block)
+        result = flow.call(self.__fallback, args)
+        results.append((result, flow.builder.basic_block))
+        flow.builder.branch(final_block)
 
-        builder.position_at_end(final_block)
-        phi = builder.phi(self_ret_type.machine_type(), "hash_dispatch_result")
+        flow.builder.position_at_end(final_block)
+        phi = flow.builder.phi(self_ret_type.machine_type(), "hash_dispatch_result")
         for (value, block) in results:
             phi.add_incoming(value, block)
         return phi

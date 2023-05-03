@@ -3,7 +3,23 @@ from typing import Union, List, Sequence, Iterable, Tuple, TypeVar, Generic, Dic
 
 from llvmlite.ir import IRBuilder, Value as IRValue, Block
 
-from dispyatcher import InvalidationTarget, Handle, Type
+from dispyatcher import InvalidationTarget, Handle, Type, ControlFlow, F
+
+
+class RepackingFlow(ControlFlow):
+    __fallback_block: Block
+
+    def __init__(self, ir_builder: IRBuilder, fallback_block: Block):
+        super().__init__(ir_builder)
+        self.__fallback_block = fallback_block
+
+    def alternate(self):
+        self.builder.branch(self.__fallback_block)
+
+    def alternate_on_bool(self, condition: IRValue) -> None:
+        ok_block = self.builder.append_basic_block("repack_ok")
+        self.builder.cbranch(condition, ok_block, self.__fallback_block)
+        self.builder.position_at_start(ok_block)
 
 
 class Repacker(InvalidationTarget):
@@ -36,16 +52,12 @@ class Repacker(InvalidationTarget):
 
         pass
 
-    def generate_ir(self, builder: IRBuilder, args: Sequence[IRValue], failure_block: Block,
-                    global_addresses: Dict[str, ctypes.c_char_p]) -> Sequence[IRValue]:
+    def generate_ir(self, flow: RepackingFlow, args: Sequence[IRValue]) -> Sequence[IRValue]:
         """
         Generate code to compile this repack operation
 
-        :param builder: the LLVM builder to generate code
+        :param flow: the control flow to generate code in
         :param args: the subset of arguments the repacker will consume
-        :param failure_block: a block that code should branch to if the unpacking was unsuccessful. No code should be
-        put in this block
-        :param global_addresses: the dictionary of function pointers to initialize
         :return: the output arguments
         """
         pass
@@ -196,32 +208,33 @@ class RepackingDispatcher(Handle, Generic[T]):
     def function_type(self) -> (Type, Sequence[Type]):
         return self.__fallback.function_type()
 
-    def generate_ir(self, builder: IRBuilder, args: Sequence[IRValue],
-                    global_addresses: Dict[str, ctypes.c_char_p]) -> IRValue:
-        output_block = builder.append_basic_block()
+    def generate_ir(self, flow: F, args: Sequence[IRValue]) -> IRValue:
+        output_block = flow.builder.append_basic_block()
         phi = []
         for index, (handle, guard) in enumerate(self.__dispatch):
-            fallback_block = builder.append_basic_block(f"repack_attempt_{index}")
+            fallback_block = flow.builder.append_basic_block(f"repack_attempt_{index}")
 
             guard_end_index = self.__common + guard.input_count()
 
             inner_args = []
             inner_args.extend(args[0:self.__common])
             guard_args = args[self.__common:guard_end_index]
-            inner_args.extend(guard.generate_ir(builder, guard_args, fallback_block, global_addresses))
+            inner_flow = RepackingFlow(flow.builder, fallback_block)
+            inner_args.extend(guard.generate_ir(inner_flow, guard_args))
             inner_args.extend(args[guard_end_index + 1:])
+            flow.extend_global_bindings(inner_flow.finish())
 
-            result = handle.generate_ir(builder, inner_args, global_addresses)
-            builder.branch(output_block)
-            phi.append((builder.block, result))
-            builder.position_at_end(fallback_block)
+            result = flow.call(handle, inner_args)
+            flow.builder.branch(output_block)
+            phi.append((flow.builder.block, result))
+            flow.builder.position_at_end(fallback_block)
 
-        result = self.__fallback.generate_ir(builder, args, global_addresses)
-        phi.append((builder.block, result))
-        builder.branch(output_block)
+        result = flow.call(self.__fallback, args)
+        phi.append((flow.builder.block, result))
+        flow.builder.branch(output_block)
 
-        builder.position_at_end(output_block)
-        result = builder.phi(self.__fallback.function_type()[0].machine_type(), "repack_result")
+        flow.builder.position_at_end(output_block)
+        result = flow.builder.phi(self.__fallback.function_type()[0].machine_type(), "repack_result")
         for (block, value) in phi:
             result.add_incoming(value, block)
         return result

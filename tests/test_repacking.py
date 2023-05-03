@@ -1,16 +1,16 @@
 import ctypes
 import unittest
-from typing import Sequence, Union, Any, Dict
+from typing import Sequence, Union, Any
 
 import llvmlite.ir
 import llvmlite.ir
-from llvmlite.ir import IRBuilder, Value as IRValue, Block
+from llvmlite.ir import Value as IRValue
 
 import dispyatcher
 import dispyatcher.general
 from dispyatcher import CallSite, IdentityHandle, IgnoreArgumentsHandle, Type
 from dispyatcher.general import SimpleConstantHandle
-from dispyatcher.repacking import Repacker, RepackingDispatcher
+from dispyatcher.repacking import Repacker, RepackingDispatcher, RepackingFlow
 
 
 class RepackTests(unittest.TestCase):
@@ -48,16 +48,12 @@ class SummingRepacker(Repacker):
     def output_count(self) -> int:
         return 1
 
-    def generate_ir(self, builder: IRBuilder, args: Sequence[IRValue], failure_block: Block,
-                    global_addresses: Dict[str, ctypes.c_char_p]) -> Sequence[IRValue]:
+    def generate_ir(self, flow: RepackingFlow, args: Sequence[IRValue]) -> Sequence[IRValue]:
         value = args[0]
         for arg in args[1:]:
-            value = builder.add(value, arg)
-        condition = builder.icmp_signed('>', value, llvmlite.ir.Constant(self.__type, self.__hint))
-        ok_block = builder.append_basic_block("summing_ok")
-        builder.cbranch(condition, ok_block, failure_block)
-        builder.position_at_start(ok_block)
-        return builder.mul(value, llvmlite.ir.Constant(self.__type, 10)),
+            value = flow.builder.add(value, arg)
+        flow.alternate_on_bool(flow.builder.icmp_signed('>', value, llvmlite.ir.Constant(self.__type, self.__hint)))
+        return flow.builder.mul(value, llvmlite.ir.Constant(self.__type, 10)),
 
 
 class SummingRepackingHandle(RepackingDispatcher):

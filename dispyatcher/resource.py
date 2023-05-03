@@ -1,10 +1,9 @@
-import ctypes
-from typing import Sequence, Dict, Union
+from typing import Sequence, Union
 
 import llvmlite.ir
-from llvmlite.ir import IRBuilder, Value as IRValue
+from llvmlite.ir import Value as IRValue, IRBuilder
 
-from dispyatcher import Handle, Type
+from dispyatcher import Handle, Type, F, ControlFlow
 
 
 class ResourceHandle(Handle):
@@ -19,7 +18,7 @@ class ResourceHandle(Handle):
     __index: Union[int, None]
     __inner: Handle
 
-    def __init__(self, inner: Handle, index: Union[int, None], constructor: Handle, destructor: Handle):
+    def __init__(self, inner: Handle, index: Union[int, None], constructor: Handle, destructor: Handle[ControlFlow]):
         """
         Create a new resource management handle
 
@@ -82,14 +81,13 @@ class ResourceHandle(Handle):
             args.extend(inner_args[self.__index + 1:])
         return inner_ret, args
 
-    def generate_ir(self, builder: IRBuilder, args: Sequence[IRValue],
-                    global_addresses: Dict[str, ctypes.c_char_p]) -> IRValue:
+    def generate_ir(self, flow: F, args: Sequence[IRValue]) -> IRValue:
         num_ctor_args = len(self.__constructor.function_type()[1])
         if self.__index is None:
             ctor_args = args[0:num_ctor_args]
         else:
             ctor_args = args[self.__index:self.__index + num_ctor_args]
-        value = self.__constructor.generate_ir(builder, ctor_args, global_addresses)
+        value = flow.call(self.__constructor, ctor_args)
         if self.__index is None:
             inner_args = args[num_ctor_args:]
         else:
@@ -97,8 +95,13 @@ class ResourceHandle(Handle):
             inner_args.extend(args[0:self.__index])
             inner_args.append(value)
             inner_args.extend(args[self.__index + 1:])
-        result = self.__inner.generate_ir(builder, inner_args, global_addresses)
-        self.__destructor.generate_ir(builder, (value,), global_addresses)
+        result = flow.call(self.__inner, inner_args)
+
+        def cleanup(builder: IRBuilder):
+            f = ControlFlow(builder)
+            self.__destructor.generate_ir(f, (value,))
+            return f.finish()
+        flow.defer_cleanup(cleanup)
         return result
 
     def __str__(self) -> str:

@@ -1,9 +1,9 @@
-import ctypes
 import itertools
-from typing import Dict, Sequence, TypeVar
-from dispyatcher import Handle, Type, PreprocessArgumentHandle
-from llvmlite.ir import IRBuilder, Value as IRValue
+from typing import Sequence, TypeVar
 
+from llvmlite.ir import Value as IRValue
+
+from dispyatcher import Handle, Type, PreprocessArgumentHandle, F
 
 T = TypeVar('T')
 
@@ -41,11 +41,10 @@ class PermuteArgumentsHandle(Handle):
 
         return handle_ret, handle_args
 
-    def generate_ir(self, builder: IRBuilder, args: Sequence[IRValue],
-                    global_addresses: Dict[str, ctypes.c_char_p]) -> IRValue:
+    def generate_ir(self, flow: F, args: Sequence[IRValue]) -> IRValue:
         for permutation in self.__permutations:
             args = permutation.permute(args)
-        return self.__handle.generate_ir(builder, args, global_addresses)
+        return flow.call(self.__handle, args)
 
     def __str__(self) -> str:
         return f"Permute arguments of {self.__handle} using {(str(p) for p in self.__permutations)}"
