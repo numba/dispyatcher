@@ -1,11 +1,11 @@
-import copy
-import ctypes
-import weakref
-from typing import Sequence, List, Dict, Union, TypeVar, Generic, Callable
+import enum
 
+import ctypes
 import llvmlite.binding
 import llvmlite.ir
+import weakref
 from llvmlite.ir import Type as LLType, IRBuilder, Value as IRValue, PointerType
+from typing import Sequence, List, Dict, TypeVar, Generic, Tuple, Set, Optional, Union, Callable, Any
 
 
 def llvm_type_to_ctype(ty: LLType):
@@ -67,7 +67,7 @@ class Type:
     """
     The representation of a parameter or return type that a handle can use
     """
-    def into_type(self, target) -> Union["Handle", None]:
+    def into_type(self, target) -> Optional["Handle"]:
         """
         Convert from self type into the target type provided.
 
@@ -78,9 +78,9 @@ class Type:
         This method operates in conjunction with `from_type` to allow either the source or destination type to provide
         a conversion, with the source type having priority.
         """
-        pass
+        return None
 
-    def from_type(self, source) -> Union["Handle", None]:
+    def from_type(self, source) -> Optional["Handle"]:
         """
         Convert from the provided type into the self type.
 
@@ -91,8 +91,40 @@ class Type:
         This method operates in conjunction with `into_type` to allow either the source or destination type to provide
         a conversion, with the source type having priority.
         """
+        return None
 
-        pass
+    def clone(self, flow: "F", value: IRValue) -> IRValue:
+        """
+        Creates a copy of a value of this type and returns the copy.
+
+        "Copy" is a type-specific idea. Since some handles will require an "owned" value and making a "copy" is meant to
+        satisfy that requirement. For some types, a copy might just be the value; _e.g._, a copy of an integer is just
+        the original value. Similarly, pointers to constant values (_e.g._, function pointers, string literals), can
+        also be copied by using the original value. For Python objects or other reference counted objects, the copy
+        operation can simply adjust the reference count and return the same value, while tracking objects, _e.g._, C++'s
+        `std::shared_ptr<>`, may return a different value. It's also worth noting that the underlying type does not
+        determine the behaviour of cloning. For instance, it would be possible to create a type for a file descriptor,
+        which is represented as an integer, but still requires a copy to create an independently closable descriptor.
+
+        If the value cannot be copied, this should throw an exception.
+        :param flow: the control flow in which to generate the copy code
+        :param value: the value to copy
+        :return: the copied value
+        """
+        raise ValueError(f"Type {self} can't be copied")
+
+    def clone_is_self_contained(self) -> bool:
+        """
+        Indicates if a copy of a value of this type may be a self-contained copy or a copy that still references the
+        lifetimes of objects that made it.
+
+        For instance, creating a copy of an iterator may still reference the original collection and be bound by its
+        lifetime; while creating a copy of that collection may have no lifetime requirements. It's possible to have a
+        copy operation that will preserve some lifetimes and not others, but this is not supported.
+
+        :return: whether the value is self-contained (true) or holds on to the existing lifetimes (false)
+        """
+        raise NotImplementedError()
 
     def ctypes_type(self):
         """
@@ -103,6 +135,23 @@ class Type:
         representation is available.
         """
         return llvm_type_to_ctype(self.machine_type())
+
+    def drop(self, flow: "FlowState", value: IRValue) -> None:
+        """
+        Destroys a value
+
+        Calls the destructor on a value, if necessary. It is assumed that a destructor will be called for any owned
+        values that are not returned.
+
+        Many values will be trivially destroyable (_e.g._, numeric values, function pointers), in which case this method
+        should simply generate no codes.
+
+        It is also possible to have a value which should never be destroyed (_i.e._, a monad), in which case, this
+        method can throw an exception.
+        :param flow: the control flow in which to generate the destruction code
+        :param value: the value to destroy
+        """
+        raise NotImplementedError()
 
     def machine_type(self) -> LLType:
         """
@@ -116,7 +165,7 @@ class Type:
         Therefore, the contract provided is that manipulations will happen only ever on high-level types and the
         machine type is used purely for generating code.
         """
-        pass
+        raise NotImplementedError()
 
     def as_pointer(self) -> "Type":
         """
@@ -135,7 +184,7 @@ class Deref(Type):
         The type "inside" this type.
         :return: the inner type
         """
-        pass
+        raise NotImplementedError()
 
 
 class Pointer(Deref):
@@ -159,6 +208,15 @@ class Pointer(Deref):
     def target(self) -> Type:
         return self.__inner
 
+    def clone(self, builder: IRBuilder, value: IRValue) -> IRValue:
+        return value
+
+    def clone_is_self_contained(self) -> bool:
+        return False
+
+    def drop(self, builder: IRBuilder, value: IRValue) -> None:
+        pass
+
     def __eq__(self, o: object) -> bool:
         if isinstance(o, Pointer):
             return o.__inner == self.__inner
@@ -168,71 +226,226 @@ class Pointer(Deref):
         return f"Pointer to {self.__inner}"
 
 
-class ControlFlow:
-    """
-    A non-linear flow control mechanism
+ArgumentManagement = enum.Enum('ArgumentManagement', [
+    'BORROW_TRANSIENT',
+    'BORROW_CAPTURE',
+    'BORROW_CAPTURE_PARENTS',
+    'TRANSFER_TRANSIENT',
+    'TRANSFER_CAPTURE_PARENTS'])
+"""
+This determines how memory and lifetime management will work for an argument. There are two parts: the memory management
+and the lifetime model.
 
-    This super type can be used for a control flow that does not support alternate control flow. There is a separate
-    control flow that allow using the CPython exception mechanism for non-linear flow. The callsite must have one
-    top-level flow control, but the handles within don't have to match exactly. It is possible to have handles that can
-    adapt from one flow control to another (_e.g._, check `errno` and turn it into a Python exception) or if flow
-    controls are logical subsets of one another (_e.g._, a handle using this flow control, which is infallible/linear,
-    can be used inside a callsite that has takes another flow control); said another way, you can always use a handle
-    that doesn't throw in a callsite that handles a throw.
+The first part determines memory management:
+BORROW: the caller is responsible for freeing this value when it is not in use
+TRANSFER: the callee is responsible for freeing this value
+
+Normally arguments are assumed to be borrowed for the lifetime of the function, and they can be destroyed after the
+function is called. However, some functions take ownership of the argument and the caller should not destroy the
+argument.
+
+For some types that have trivial copy functions, the distinction between owning or not owning the argument might be
+meaningless though it is still made. If you are familiar with Rust, these are types that would implement the `Copy`
+trait. It is preferred to transfer in these cases, but it should not affect the generated code as the inserted memory
+management will be no-ops.
+
+The second part determines the lifetime management. For any given handle the result may be tied to the input arguments.
+That is to say that it might be valid only if the input value has not been destroyed. This might be because the value
+references an internal part of the other structure (_e.g._, it is a pointer to an element of a collection, or a chunk of
+an arena or an iterator over a collection).
+
+A handle can make the distinction between capturing the lifetime of an argument vs capturing the same lifetimes as that
+argument.
+
+TRANSIENT: the function may read the value, but the output does not depend on this value
+CAPTURE: the function will produce output that depends on the lifetime of this argument (_i.e._, the result must be
+freed before this argument is freed)
+CAPTURE_PARENTS: the function will produce output that depends on the lifetimes of the lifetimes already captured by
+this value, but not the value itself (consider a situation like an iterator; this indicates the function depends on the
+collection, but not the iterator itself)
+
+For example, suppose you take an iterator over a collection as an argument and capture a value from the iterator. The
+resulting data does not require the iterator to continue existing upon returning. However, it does require the
+collection the iterator was borne from continue to exist. This is the distinction made been a `CAPTURE` and
+`CAPTURE_PARENTS`.
+
+Note that `TRANSFER_CAPTURE` is an impossible condition as it means the callee is going to free a value, but the output
+is dependent on it.
+"""
+
+
+ReturnManagement = enum.Enum('ReturnManagement', ['BORROW', 'TRANSFER'])
+"""
+This determines how memory management will work for a return value:
+
+BORROW: the callee is responsible for freeing this value when it is not in use
+TRANSFER: the caller is responsible for freeing this value
+
+For instance, if the value is an element of a collection, it shouldn't invoke a destructor directly; the value can be
+discarded without calling an explicit destructor. This is not true for an iterator that would require freeing the memory
+associated with the iterator even if the collection will live on.
+"""
+
+
+class FlowState:
     """
+    A flow state captures the current function being built to implement a call site.
+
+    It exists as a separate class from a control flow because it is possible to change control flows when implementing a
+    call site and a single call site might need to have independent flow states if it has branching paths.
+    """
+    __arguments: Set[int]
     __builder: IRBuilder
     __global_addresses: Dict[str, ctypes.c_char_p]
-    __cleanup: List[Callable[[IRBuilder], Dict[str, ctypes.c_char_p]]]
+    __library_dependencies: Set[str]
+    __dependencies: Dict[int, Tuple[Set[int], IRValue, Optional[Type]]]
+    __next_lifetime: int
 
-    def __init__(self, builder: IRBuilder):
+    def __init__(self,
+                 builder: IRBuilder,
+                 dependencies: Union[int, Dict[int, Tuple[Set[int], IRValue, Optional[Type]]]],
+                 global_addresses: Dict[str, ctypes.c_char_p],
+                 library_dependencies: Set[str]):
+        self.__arguments = set(range(dependencies)) if isinstance(dependencies, int)else set(dependencies.keys())
         self.__builder = builder
-        self.__global_addresses = {}
-        self.__cleanup = []
+        self.__global_addresses = global_addresses
+        self.__library_dependencies = library_dependencies
+        if isinstance(dependencies, int):
+            self.__dependencies = {arg: (set(), builder.function.args[arg], None) for arg in range(0, dependencies)}
+            self.__next_lifetime = dependencies
+        else:
+            self.__dependencies = dependencies
+            self.__next_lifetime = max(self.__dependencies.keys()) + 1 if dependencies else 0
 
     @property
     def builder(self) -> IRBuilder:
         """
         Access the LLVM IR builder for this flow control.
-        :return:
         """
         return self.__builder
 
-    def defer_cleanup(self, cleanup: Callable[[IRBuilder], Dict[str, ctypes.c_char_p]]) -> None:
+    def add_library_dependency(self, name: str) -> None:
         """
-        Add an operation that should be done during all cleanup paths.
-
-        Callbacks are placed on a LIFO stack. Whenever the flow control needs to return, it will call all of these
-        callbacks to do resource deallocation required. The callbacks do *not* have access to the advanced features of
-        the flow control (_i.e._, they cannot throw; they must be infallible).
-
-        Because the flow control may have multiple execution paths, these callbacks must be safe and deterministic to
-        call repeatedly. The return (happy) path will also call the cleanup callbacks.
-
-        :param cleanup: this callback will be executed on all exit paths
+        Adds an OrcJIT dependency to the callsite.
+        :param name: the name of the library
         """
-        self.__cleanup.append(cleanup)
+        self.__library_dependencies.add(name)
 
-    def _cleanup(self) -> None:
+    def check_read(self, lifetime) -> None:
         """
-        Perform cleanup on whatever block the builder is currently set to.
+        Assert tha that a lifetime is still valid
+        :param lifetime: the identifier of the lifetime
+        """
+        assert lifetime in self.__dependencies, "Trying to read lifetime that has been transferred or dropped"
 
-        This is meant to allow subclass to perform appropriate cleanup during split flow control. This does not generate
-        a return instruction. The caller must terminate the active block. Since all resources are deallocated, no other
-        operations should be performed in the block.
+    def create_lifetime(self, value: IRValue, parents: Sequence[Tuple[int, bool]], ty: Optional[Type]) -> int:
         """
-        for cleanup in reversed(self.__cleanup):
-            self.__global_addresses.update(cleanup(self.builder))
+        Tracks a new lifetime.
+        :param value: the LLVM value that needs to be tracked
+        :param parents: the other lifetimes to connect to this lifetime; each is an argument index and a Boolean value
+        indicating whether to include this value (False) or the lifetimes of its ancestors (True)
+        :param ty: the type of the value, if it needs to be freed explicitly. If does not, None should be provided and
+        the drop operation will be a no-op (though dependant values may still get explicit drop operations)
+        :return: an integer which is the state-specific lifetime identifier
+        """
+        lifetime = self.__next_lifetime
+        self.__next_lifetime += 1
+        lifetimes = set()
+        for parent, inner in parents:
+            if inner:
+                dependencies = self.__dependencies[parent]
+                assert dependencies, f"Failed to create lifetime as {parent} is an argument"
+                lifetimes.update(dependencies[0])
+            else:
+                lifetimes.add(parent)
+        self.__dependencies[lifetime] = (lifetimes, value, ty)
+        return lifetime
 
-    def finish(self) -> Dict[str, ctypes.c_char_p]:
+    def drop(self, lifetime) -> None:
         """
-        Invoked by the callsite to perform any cleanup tasks before it generating the final return instruction and to
-        collect any global addresses (exteral bindings) that will need to be injected into the call site.
+        Explicitly drop a lifetime and any dependant values.
 
-        If a subclass has additional finalization operations, it should override this method, perform the cleanup, and
-        then return the call to the super method.
+        This will run all appropriate destructors
+        :param lifetime: the state-specific lifetime identifier
         """
-        self._cleanup()
-        return self.__global_addresses
+        (_, value, ty) = self.__dependencies[lifetime]
+        self.transfer(lifetime)
+        if ty is not None:
+            self.builder.comment(f"Destroying owned {value} with lifetime {lifetime}")
+            ty.drop(self, value)
+        else:
+            self.builder.comment(f"Discarding borrowed {value} with lifetime {lifetime}")
+
+    def drop_all(self) -> None:
+        """
+        Drops all values. This is only useful when trying to handle exceptional control flow
+        """
+        active = list(sorted(self.__dependencies.keys(), reverse=True))
+        for a in active:
+            self.drop(a)
+
+    def finish(self, return_lifetime: Union[None, int, "TemporaryValue"]) -> None:
+        """
+        Terminates a flow state, possibly with a return value.
+
+        This will trigger cleanup of all temporary values in the block. If a return lifetime is provided, that value
+        will be spared from the cleanup and it will be checked that it does not depend on any temporary values that are
+        being cleaned.
+        :param return_lifetime: an optional return lifetime to track
+        :return:
+        """
+        spared_lifetimes = set(self.__arguments)
+        if isinstance(return_lifetime, TemporaryValue):
+            spared_lifetimes.add(return_lifetime.lifetime)
+            return_lifetime.pluck()
+            self.builder.comment(f"Finishing with lifetime {return_lifetime}")
+        elif isinstance(return_lifetime, int):
+            spared_lifetimes.add(return_lifetime)
+            self.pluck(return_lifetime)
+            self.builder.comment(f"Finishing with lifetime {return_lifetime}")
+        else:
+            self.builder.comment("Finishing with no return lifetime")
+        active = list(sorted((lt for lt in self.__dependencies.keys() if lt not in spared_lifetimes), reverse=True))
+        for a in active:
+            self.drop(a)
+
+    def fork(self) -> "FlowState":
+        """
+        Create a partial-copy of this flow state.
+
+        This partial copy will share global state with the main flow state, including the LLVM IR generator, library
+        dependency tracking, and global addresses. It will have an independent set of lifetimes. This allows a handle to
+        create a child control flow for implementing branching paths. Each fork must be finished. Lifetime identifiers
+        _cannot_ be shared across flow states and are not guaranteed to be globally unique.
+        :return: the new flow state that will share the same global addresses and builder as this one
+        """
+        return FlowState(self.__builder, self.__dependencies, self.__global_addresses, self.__library_dependencies)
+
+    def pluck(self, lifetime: int) -> None:
+        """
+        Plucks a value out of the current flow state. This is an advanced version of transfer that ensure that the value
+        not only has no dependant values, but it also only depends on the initial lifetimes of a flow state. For a call
+        site, the initial lifetimes are that of the arguments. For a forked value, any values that were live at the time
+        of forking as allowed as parent lifetimes of the plucked value.
+        :param lifetime: the lifetime identifier to pluck
+        """
+        (parents, _, _) = self.__dependencies[lifetime]
+        for parent in parents:
+            assert parent in self.__arguments, f"Trying to prune {lifetime}, but it depends on temporary {parent}."
+        self.transfer(lifetime)
+
+    def transfer(self, lifetime) -> None:
+        """
+        Transfers to another controller a lifetime by dropping any dependant values
+        :param lifetime: the lifetime to transfer
+        """
+        del self.__dependencies[lifetime]
+        deps = list(sorted((dead_child for dead_child, (parents, _, _) in self.__dependencies.items()
+                            if lifetime in parents), reverse=True))
+        if deps:
+            self.builder.comment(f"Eliminating {lifetime} requires eliminating dependant lifetimes {deps}")
+            for dep in deps:
+                self.drop(dep)
 
     def upsert_global_binding(self, name: str, ty: LLType, address: ctypes.c_char_p) -> IRValue:
         """
@@ -266,10 +479,10 @@ class ControlFlow:
         :param var_arg: whether the function takes variadic arguments
         :return: an LLVM global constant for this binding
         """
-        if name in self.__builder.module.globals:
-            return self.__builder.module.globals[name]
+        if name in self.builder.module.globals:
+            return self.builder.module.globals[name]
         else:
-            value = llvmlite.ir.Function(self.__builder.module,
+            value = llvmlite.ir.Function(self.builder.module,
                                          llvmlite.ir.FunctionType(ret_ty, args, var_arg=var_arg),
                                          name)
             return value
@@ -282,36 +495,285 @@ class ControlFlow:
         :param ty: the LLVM type for the symbol
         :return: an LLVM global constant for this binding
         """
-        if name in self.__builder.module.globals:
-            return self.__builder.module.globals[name]
+        if name in self.builder.module.globals:
+            return self.builder.module.globals[name]
         else:
-            value = llvmlite.ir.GlobalVariable(self.__builder.module, ty, name)
+            value = llvmlite.ir.GlobalVariable(self.builder.module, ty, name)
             return value
 
-    def extend_global_bindings(self, addresses: Dict[str, ctypes.c_char_p]) -> None:
-        """
-        Directly adds addresses to the global binding pool
 
-        This assumes the constants have already been created in LLVM. This is intended to be used when adapting one
-        control flow to another. The constants from the `finish()` method of the inner flow can be added here to the
-        outer flow.
-        :param addresses: the dictionary of addresses to add
-        """
-        self.__global_addresses.update(addresses)
+class TemporaryValue:
+    """
+    The result of a call value that can be passed to another call or returned
+    """
+    __state: FlowState
+    __lifetime: int
+    __live: bool
+    __value: IRValue
 
-    def call(self, handle: "Handle", args: Sequence[IRValue]) -> IRValue:
+    def __init__(self, state: FlowState, value: IRValue, lifetime: int):
+        self.__state = state
+        self.__value = value
+        self.__lifetime = lifetime
+        self.__live = True
+
+    def __str__(self) -> str:
+        return f"TemporaryValue[{self.__lifetime}]({self.__value})"
+
+    @property
+    def ir_value(self) -> IRValue:
+        """
+        The LLVM value that is the result of the call
+        """
+        return self.__value
+
+    @property
+    def lifetime(self) -> int:
+        return self.__lifetime
+
+    def check_read(self) -> None:
+        """
+        Ensure that this lifetime is still alive
+
+        Throws an exception if the value has been transferred or dropped
+        """
+        assert self.__live, "Cannot check value"
+        self.__state.check_read(self.__lifetime)
+
+    def drop(self) -> None:
+        """
+        Discards this value and generates the associated cleanup
+        """
+        assert self.__live, "Cannot drop dead value"
+        self.__state.drop(self.__lifetime)
+        self.__live = False
+
+    def pluck(self) -> IRValue:
+        """
+        Drops any dependant values and makes sure that the result has no dependencies outside of arguments
+
+        :return: the LLVM value
+        """
+        assert self.__live, "Cannot transfer dead value"
+        self.__state.pluck(self.__lifetime)
+        self.__live = False
+        return self.__value
+
+    def transfer(self) -> IRValue:
+        """
+        Drops any dependant values and transfers control of this value
+
+        Note that this is what you should call if returning the result of a call
+        :return: the LLVM value
+        """
+        assert self.__live, "Cannot transfer dead value"
+        self.__state.transfer(self.__lifetime)
+        self.__live = False
+        return self.__value
+
+
+class ControlFlow:
+    """
+    A non-linear flow control mechanism
+
+    This super type can be used for a control flow that does not support alternate control flow. There is a separate
+    control flow that allow using the CPython exception mechanism for non-linear flow. The callsite must have one
+    top-level flow control, but the handles within don't have to match exactly. It is possible to have handles that can
+    adapt from one flow control to another (_e.g._, check `errno` and turn it into a Python exception) or if flow
+    controls are logical subsets of one another (_e.g._, a handle using this flow control, which is infallible/linear,
+    can be used inside a callsite that has takes another flow control); said another way, you can always use a handle
+    that doesn't throw in a callsite that handles a throw.
+    """
+    __state: FlowState
+    __arg_lifetimes: List[Tuple["Handle", List[Optional[Set[int]]], List[Callable[[], None]]]]
+
+    def __init__(self, state: FlowState):
+        self.__state = state
+        self.__arg_lifetimes = []
+
+    @property
+    def builder(self) -> IRBuilder:
+        """
+        Access the LLVM IR builder for this flow control.
+        :return:
+        """
+        return self.__state.builder
+
+    def add_library_dependency(self, name: str) -> None:
+        """
+        Adds an OrcJIT dependency to the callsite.
+        :param name: the name of the library
+        """
+        self.__state.add_library_dependency(name)
+
+    def call(self, handle: "Handle", args: Sequence[Union[TemporaryValue, Tuple[IRValue, Sequence[int]]]]) ->\
+            TemporaryValue:
         """
         Calls another handle.
 
-        This is the correct way to invoke another handle in case the control flow needs to perform some boxing/unboxing
-        behaviour. For instance, if a control flow were to handle Rust's `Result` type, this method should be overridden
-        in a way that boxes and unboxes the `Result`. In Rust speak, this ensure any function call is suffixed with the
-        `?` operator.
+        This is the correct way to invoke another handle to ensure memory management is done correctly.
         :param handle: the handle to call
-        :param args: the arguments to pass to that handle
+        :param args: the arguments to pass to that handle; each argument can be the output of an previously called
+        handle or a raw value connected to the caller's handle arguments (_i.e._, the index of the handle's arguments
+        indicates how the lifetime of the result of this function is connected to the caller's own input)
         :return: the return value from that handle
         """
-        return handle.generate_ir(self, args)
+        (callee_return_type, callee_return_management) = handle.handle_return()
+        callee_argument_info = handle.handle_arguments()
+        assert len(args) == len(callee_argument_info), "Wrong number of arguments in call"
+        if self.__arg_lifetimes:
+            (caller, caller_arg_lifetimes, _) = self.__arg_lifetimes[-1]
+            caller_argument_info = caller.handle_arguments()
+        else:
+            # This is the base case trigger by the call site, so we fake everything to the same as the handle
+            caller = "callsite"
+            caller_arg_lifetimes = [{i} for i in range(len(callee_argument_info))]
+            caller_argument_info = callee_argument_info
+        # Indicates which caller arguments are used by the callee
+        argument_lifetime_mapping = {}
+        # Indicates which callee arguments are transfers or what associated lifetime identifiers are used
+        callee_argument_lifetimes = []
+        values = []
+        self.builder.comment(f"Preparing arguments for {handle}...")
+        for index, (arg, (arg_type, arg_management)) in enumerate(zip(args, callee_argument_info)):
+            if isinstance(arg, TemporaryValue):
+                values.append(arg.ir_value)
+                if arg_management in (ArgumentManagement.TRANSFER_TRANSIENT,
+                                      ArgumentManagement.TRANSFER_CAPTURE_PARENTS):
+                    self.builder.comment(f"Transferring argument {index} for {handle}...")
+                    arg.transfer()
+                    callee_argument_lifetimes.append(None)
+                else:
+                    arg.check_read()
+                    callee_argument_lifetimes.append({arg.lifetime})
+            else:
+                (value, caller_args) = arg
+                values.append(value)
+                if arg_management in (ArgumentManagement.TRANSFER_TRANSIENT,
+                                      ArgumentManagement.TRANSFER_CAPTURE_PARENTS):
+                    for caller_arg in caller_args:
+                        assert caller_arg_lifetimes[caller_arg] is None,\
+                            (f"Handle {caller} transfers argument {caller_arg} to handle {handle} for argument {index} "
+                             " but doesn't own it")
+                        self.builder.comment(f"Transferring {caller_arg} argument to {index} for {handle}...")
+                        self.__state.transfer(caller_arg_lifetimes[caller_arg])
+                    callee_argument_lifetimes.append(None)
+                else:
+                    combined_caller_lifetimes = set()
+                    for caller_arg in caller_args:
+                        lifetimes_for_arg = caller_arg_lifetimes[caller_arg]
+                        if lifetimes_for_arg:
+                            combined_caller_lifetimes.update(lifetimes_for_arg)
+                            (_, caller_arg_management) = caller_argument_info[caller_arg]
+                            capture_parents = caller_arg_management in (ArgumentManagement.TRANSFER_CAPTURE_PARENTS,
+                                                                        ArgumentManagement.BORROW_CAPTURE_PARENTS)
+                            for lifetime in lifetimes_for_arg:
+                                self.__state.check_read(lifetime)
+                                if lifetime not in argument_lifetime_mapping:
+                                    argument_lifetime_mapping[lifetime] = capture_parents
+                                else:
+                                    argument_lifetime_mapping[lifetime] &= capture_parents
+                    callee_argument_lifetimes.append(combined_caller_lifetimes)
+        self.__arg_lifetimes.append((handle, callee_argument_lifetimes, []))
+        self.builder.comment(f"Calling {handle}...")
+        value = handle.generate_handle_ir(self, values)
+        _, _, cleanups = self.__arg_lifetimes.pop()
+        if isinstance(value, IRValue):
+            lifetime = self.__state.create_lifetime(
+                value,
+                [(lifetime, capture_inner) for lifetime, capture_inner in argument_lifetime_mapping.items()],
+                callee_return_type if callee_return_management == ReturnManagement.TRANSFER else None)
+            self.builder.comment(f"Created {lifetime} for {value}, as result of {handle}")
+            value = TemporaryValue(self.__state, value, lifetime)
+
+        if cleanups:
+            self.builder.comment(f"Cleaning up after call to {handle}")
+            for cleanup in cleanups:
+                cleanup()
+
+        return value
+
+    def call_and_pluck(self, handle: "Handle", args: Sequence[Union[TemporaryValue, Tuple[IRValue, Sequence[int]]]]) ->\
+            IRValue:
+        branched_flow = self._create_branch(self.__state.fork())
+        branched_flow.__arg_lifetimes.append(self.__arg_lifetimes[-1])
+        result = branched_flow.call(handle, args)
+        branched_flow.__state.finish(result)
+        return result.ir_value
+
+    def _create_branch(self, state) -> "F":
+        """
+        Creates a new control flow that is a separate of the existing flow for a branched execution pattern
+        :param state: the control flow state to use
+        :return: the new control flow state
+        """
+        return ControlFlow(state)
+
+    def drop_arg(self, index: int) -> None:
+        """
+        Triggers generation of a drop for an argument. This is only safe if the argument is transferred.
+        :param index: the position of the argument as seen by the current handle
+        """
+        (caller, caller_arg_lifetimes, _) = self.__arg_lifetimes[-1]
+        if caller_arg_lifetimes[index]:
+            self.builder.comment(f"Manually dropping argument {index} for {caller}")
+            for lifetime in caller_arg_lifetimes[index]:
+                self.__state.drop(lifetime)
+
+    def fork_and_die(self) -> None:
+        """
+        Creates a new control flow state and then drops all known values.
+
+        This is only useful for handling exception program flow.
+        """
+        self.__state.fork().drop_all()
+
+    def unwind_cleanup(self, cleanup: Callable[[], None]) -> None:
+        """
+        Register a callback that will be executed when the current handle frame is exited.
+
+        This will be executed _after_ any lifetime management occurs.
+        :param cleanup: the callback to execute
+        """
+        self.__arg_lifetimes[-1][2].append(cleanup)
+
+    def upsert_global_binding(self, name: str, ty: LLType, address: ctypes.c_char_p) -> IRValue:
+        """
+        Create a binding for a value.
+
+        The handle can reference an external function or other value by generating a constant and then stuffing the
+        desired address for that constant into this table. LLVM does not permit writing raw addresses for function
+        pointers, so this acts as a workaround. Moreover, these addresses can be updated dynamically using the
+        invalidation mechanism. Strictly, these don't have to be function pointers; they can be any kind of pointer.
+        :param name: the name to use; there is no duplication control, so if two handles use a colliding name for
+        different addresses, the behaviour is undefined.
+        :param ty: the LLVM type for the symbol; the returned value is a pointer to this type
+        :param address: the real machine address to use for this symbol
+        :return: an LLVM global constant for this binding
+        """
+        return self.__state.upsert_global_binding(name, ty, address)
+
+    def use_native_function(self, name: str, ret_ty: LLType, args: Sequence[LLType], var_arg: bool = False) -> IRValue:
+        """
+        Create a binding for a function exported form the current binary.
+
+        :param name: the name to use
+        :param ret_ty: the LLVM type for the return of the function
+        :param args: the LLVM type for the return of the function
+        :param var_arg: whether the function takes variadic arguments
+        :return: an LLVM global constant for this binding
+        """
+        return self.__state.use_native_function(name, ret_ty, args, var_arg)
+
+    def use_native_global(self, name: str, ty: LLType) -> IRValue:
+        """
+        Create a binding for a symbol exported form the current binary.
+
+        :param name: the name to use
+        :param ty: the LLVM type for the symbol
+        :return: an LLVM global constant for this binding
+        """
+        return self.__state.use_native_global(name, ty)
 
 
 class InvalidationListener:
@@ -411,59 +873,49 @@ class Handle(InvalidationTarget, Generic[F]):
 
     def __add__(self, other):
         if isinstance(other, Handle):
-            return PreprocessArgumentHandle(other, 0, self)
+            return PreprocessArgument(other, 0, self)
         elif callable(other):
-            return PreprocessArgumentHandle(other(self.function_type()[0]), 0, self)
+            return PreprocessArgument(other(self.handle_return()[0]), 0, self)
         elif isinstance(other, tuple) and callable(other[0]):
-            return PreprocessArgumentHandle(other[0](self.function_type()[0], *other[1:]), 0, self)
+            return PreprocessArgument(other[0](self.handle_return()[0], *other[1:]), 0, self)
         else:
             raise TypeError(f"Unsupported operand type for +: {type(other)}")
 
-    def cast(self, target_return_type: Type, *target_parameter_types: Type) -> "Handle":
-        """
-        Determine the automatic type-directed conversions necessary to convert a handle to the signature provided.
+    def __floordiv__(self, other):
+        if isinstance(other, Type):
+            (ret_type, ret_management) = self.handle_return()
+            if ret_type == other:
+                return self
+            processor = ret_type.into_type(other) or other.from_type(ret_type)
+            if not processor:
+                raise TypeError(f"No conversion from {ret_type} to {other} in cast of {self}.")
+            return PreprocessArgument(processor, 0, self)
+        else:
+            raise TypeError(f"Unsupported operand type for //: {type(other)}")
 
-        The number of arguments must match and then automatic type conversion done on each argument individually and
-        the return types. Casts are logically distinct from other conversion operations because they don't combine or
-        separate arguments.
-        If target type is the same as the original type, no conversion is applied.
-        :param target_return_type: the new return type
-        :param target_parameter_types: the new argument types
-        :return: the new handle
-        """
-        (source_ret, source_args) = self.function_type()
-        if source_ret == target_return_type and source_args == target_parameter_types:
-            return self
+    def __truediv__(self, other):
+        output = self
+        args = self.handle_arguments()
+        assert len(args) == len(other), f"Handle takes {len(args)}, but {len(other)} provided by cast."
+        for idx, (src_type, (tgt_type, _)) in enumerate(zip(other, args)):
+            assert isinstance(tgt_type, Type), f"Argument type {tgt_type} is not a type"
+            if tgt_type == src_type:
+                continue
+            processor = src_type.into_type(tgt_type) or tgt_type.from_type(src_type)
+            if not processor:
+                raise TypeError(f"No conversion from {src_type} to {tgt_type} in cast of {self}.")
+            output = PreprocessArgument(output, idx, processor)
+        return output
 
-        if len(source_args) != len(target_parameter_types):
-            raise TypeError(
-                f"Cannot cast {self} as argument counts are ({len(source_args)} → {len(target_parameter_types)}.")
+    def __matmul__(self, other):
+        if callable(other):
+            return other(self)
+        elif isinstance(other, tuple) and callable(other[0]):
+            return other[0](self, *other[1:])
+        else:
+            raise TypeError(f"Unsupported operand type for @: {type(other)}")
 
-        ret_handle = IdentityHandle(source_ret) if source_ret == target_return_type else (
-                source_ret.into_type(target_return_type) or target_return_type.from_type(source_ret))
-        if not ret_handle:
-            raise TypeError(f"No conversion from {source_ret} to {target_return_type} in cast of {self}.")
-
-        arg_handles = []
-        for index in range(0, len(source_args)):
-            src_arg = source_args[index]
-            tgt_arg = target_parameter_types[index]
-            arg_handle = IdentityHandle(src_arg) if src_arg == tgt_arg else (src_arg.from_type(tgt_arg) or
-                                                                             tgt_arg.into_type(src_arg))
-            if not arg_handle:
-                raise TypeError(f"No conversion from {src_arg} to {tgt_arg} at {index} in of {self}.")
-            arg_handles.append(arg_handle)
-
-        return CastHandle(self, ret_handle, arg_handles)
-
-    def function_type(self) -> (Type, Sequence[Type]):
-        """
-        Gets the type of the handle as the return type and a sequence of argument types
-        :return: the return type and a sequence of argument types
-        """
-        pass
-
-    def generate_ir(self, flow: F, args: Sequence[IRValue]) -> IRValue:
+    def generate_handle_ir(self, flow: F, args: Sequence[IRValue]) -> Union[TemporaryValue, IRValue]:
         """
         Convert the handle into LLVM machine code
         :param flow: the flow control builder
@@ -473,18 +925,21 @@ class Handle(InvalidationTarget, Generic[F]):
         """
         pass
 
-    def deref(self, target_type: Union[Type, None] = None) -> "Handle":
+    def handle_arguments(self) -> Sequence[Tuple[Type, ArgumentManagement]]:
         """
-        Generate a new handle that calls this handle, whose output must be a pointer, dereferences it and returns that
-        value.
+        Gets the argument information of the handle as a sequence of argument type and management pairs
+        :return: a sequence of tuples with the type and management for each argument
+        """
+        pass
 
-        See the `DerefPointer` handle for details on how the typing work.
-        :return: the new handle
+    def handle_return(self) -> Tuple[Type, ReturnManagement]:
         """
-        (ret_type, _) = self.function_type()
-        if not isinstance(ret_type, Deref):
-            raise TypeError(f"Don't know how to dereference f{ret_type}")
-        return self + DerefPointer(ret_type, target_type)
+        Gets the return information of a handle as a pair of the type and memory management semantics.
+
+        Note that argument semantics determine the lifetime of the output, so that information is not provided here.
+        :return: a pair of the return type and the memory management of the return value
+        """
+        pass
 
 
 _call_site_id = 0
@@ -505,34 +960,52 @@ class ControlFlowType(Generic[F]):
     control flow.
     """
 
-    def create_flow(self, builder: IRBuilder, return_type: Type, arg_types: Sequence[Type]) -> F:
+    def create_flow(self, state: FlowState,
+                    return_type: Type,
+                    return_management: ReturnManagement,
+                    arg_types: Sequence[Tuple[Type, ArgumentManagement]]) ->\
+            F:
         """
         Constructs a new control flow for a single compilation pass
-        :param builder: the LLVM IR builder to use for compilation
+        :param state: the fixed information for the control flow
         :param return_type: the return type of the callsite
+        :param return_management: the return management of the callsite
         :param arg_types: the argument types of the callsite
         :return: the control flow created
         """
-        return ControlFlow(builder)
+        return ControlFlow(state)
 
-    def ctypes_function(self, return_type: Type, arg_types: Sequence[Type]):
+    def bridge_function(self,
+                        ret: Tuple[Type, ReturnManagement],
+                        arguments: Sequence[Tuple[Type, ArgumentManagement]],
+                        address: int) -> Callable[..., Any]:
         """
-        Creates an appropriate ctypes function type for the call site.
+        Creates an appropriate Python function for the call site to invoke when called, if possible.
 
         This can create any synthetic parameters (_e.g._, callbacks for asynchronous flow) or register the calling
-        convention with respect to the Python GIL.
-        :param return_type: the return type of the callsite
-        :param arg_types: the argument types of the callsite
+        convention with respect to the Python GIL. Ultimately, this will be invoked when the callite is used as a
+        callable in Python and can do whatever is appropriate for this flow. If the signature means that the handle
+        cannot be used safely from Python, this function can throw an exception
+        :param ret: the return information of the callsite
+        :param arguments: the argument information of the callsite
+        :param address: the address of the compiled callsite
         :return: the function type
         """
-        return ctypes.CFUNCTYPE(return_type.ctypes_type(), *(a.ctypes_type() for a in arg_types))
+        for idx, (arg_type, arg_management) in enumerate(arguments):
+            if arg_management in (ArgumentManagement.TRANSFER_TRANSIENT, ArgumentManagement.TRANSFER_CAPTURE_PARENTS):
+                message = f"Argument {idx} of type {arg_type} cannot be safely transferred from external caller"
+
+                def bad_transfer(*args, **kwargs):
+                    raise ValueError(message)
+                return bad_transfer
+        return ctypes.CFUNCTYPE(ret[0].ctypes_type(), *(a.ctypes_type() for a, _ in arguments))(address)
 
 
 llvmlite.binding.initialize()
 llvmlite.binding.initialize_native_target()
 llvmlite.binding.initialize_native_asmprinter()
 
-_lljit = llvmlite.binding.create_lljit_compiler()
+lljit_instance = llvmlite.binding.create_lljit_compiler()
 
 
 class CallSite(Handle):
@@ -541,15 +1014,15 @@ class CallSite(Handle):
 
     Callsites can also be used as handles in other callsites and independently updated.
     """
-    __ctype: ctypes.CFUNCTYPE
-    __engine: Union[llvmlite.binding.ResourceTracker, None]
+    __address: ctypes.c_char_p
+    __engine: Optional[llvmlite.binding.ResourceTracker]
     __epoch: int
     __flow_type: ControlFlowType
+    __func: Callable[..., Any]
     __handle: Handle[F]
     __id: str
     __other_sites: Dict[str, ctypes.c_char_p]
     __type: llvmlite.ir.FunctionType
-    __address: ctypes.c_char_p
     llvm_ir: str
 
     def __init__(self, handle: Handle[F], flow_type: ControlFlowType = ControlFlowType()):
@@ -559,15 +1032,19 @@ class CallSite(Handle):
         :param flow_type: the control flow to be used for the callsite; the handle must be compatible with this flow
         """
         super().__init__()
+
+        def not_initialized(*_args, **_kwargs):
+            raise ValueError("Callsite is not yet compiled")
+
         self.__id = _next_call_site_id()
         self.__epoch = 0
-        (ret_type, arg_types) = handle.function_type()
-        self.__type = llvmlite.ir.FunctionType(ret_type.machine_type(), (a.machine_type() for a in arg_types))
-        self.__ctype = flow_type.ctypes_function(ret_type, arg_types)
+        (ret_type, _) = handle.handle_return()
+        self.__type = llvmlite.ir.FunctionType(ret_type.machine_type(), (a.machine_type()
+                                                                         for a, _ in handle.handle_arguments()))
         self.__flow_type = flow_type
         self.__handle = handle
         self.__engine = None
-        self.__cfunc = None
+        self.__func = not_initialized
         self.llvm_ir = "; Not yet compiled"
         handle.register(self)
         self.invalidate()
@@ -585,14 +1062,6 @@ class CallSite(Handle):
         return self.__address
 
     @property
-    def cfunc(self):
-        """
-        The Python-callable function for the contents of the call site
-        :return:
-        """
-        return self.__cfunc
-
-    @property
     def handle(self) -> Handle[F]:
         """
         The current handle inside the call site
@@ -602,11 +1071,16 @@ class CallSite(Handle):
 
     @handle.setter
     def handle(self, handle: Handle[F]):
-        assert handle.function_type() == self.__handle.function_type(), "Handle does not match call site signature."
+        assert (handle.handle_return() == self.__handle.handle_return() and
+                tuple(handle.handle_arguments()) == tuple(self.__handle.handle_arguments())),\
+            "Handle does not match call site signature."
         self.__handle.unregister(self)
         handle.register(self)
         self.__handle = handle
         self.invalidate()
+
+    def __call__(self, *args, **kwargs):
+        return self.__func(*args, **kwargs)
 
     def invalidate(self):
         # Do not call super as any listeners should not have to update if using a call site as a method handle
@@ -615,198 +1089,120 @@ class CallSite(Handle):
         module.triple = machine_triple.triple
         function = llvmlite.ir.Function(module, self.__type, "call_site")
         builder = IRBuilder(function.append_basic_block())
-        (return_type, arg_types) = self.__handle.function_type()
-        flow = self.__flow_type.create_flow(builder, return_type, arg_types)
-        result = flow.call(self.__handle, function.args)
-        global_addresses = flow.finish()
-        builder.ret(result)
+        global_addresses = {}
+        library_dependencies = set()
+        state = FlowState(builder, len(self.__handle.handle_arguments()), global_addresses, library_dependencies)
+        flow = self.__flow_type.create_flow(state,
+                                            self.__handle.handle_return()[0],
+                                            self.__handle.handle_return()[1],
+                                            self.__handle.handle_arguments())
+        result = flow.call(self.__handle, [(a, (i,)) for i, a in enumerate(function.args)])
+        state.finish(result)
+        builder.ret(result.ir_value)
         module.functions.append(function)
 
         self.llvm_ir = str(module)
         print(self.llvm_ir)
-        print(global_addresses)
 
         self.__epoch += 1
         builder = llvmlite.binding.JITLibraryBuilder().add_ir(self.llvm_ir).add_current_process().export_symbol(
             "call_site")
         for name in global_addresses.keys():
             builder.export_symbol(name)
-        self.__engine = builder.link(_lljit, f"{self.__id}_{self.__epoch}")
+        for library_dependency in library_dependencies:
+            builder.add_jit_library(library_dependency)
+        self.__engine = builder.link(lljit_instance, f"{self.__id}_{self.__epoch}")
         self.__address = ctypes.c_char_p(self.__engine["call_site"])
         self.__other_sites = {name: ctypes.cast(self.__engine[name],
                                                 ctypes.POINTER(ctypes.c_char_p)) for name in global_addresses.keys()}
         for name, address in global_addresses.items():
             ctypes.memmove(self.__other_sites[name], ctypes.addressof(address), ctypes.sizeof(ctypes.c_char_p))
         super().invalidate_address(self.__id, self.__address)
-        self.__cfunc = self.__ctype(ctypes.cast(self.__address, ctypes.c_void_p).value)
+        self.__func = self.__flow_type.bridge_function(self.handle_return(),
+                                                       self.handle_arguments(),
+                                                       ctypes.cast(self.__address, ctypes.c_void_p).value)
 
     def invalidate_address(self, name: str, address: ctypes.c_char_p):
         # Do not call super as any listeners will have a direct reference to this address if they need it
         if name in self.__other_sites:
             ctypes.memmove(self.__other_sites[name], ctypes.addressof(address), ctypes.sizeof(ctypes.c_char_p))
 
-    def function_type(self) -> (Type, Sequence[Type]):
-        return self.__handle.function_type()
+    def handle_arguments(self) -> Sequence[Tuple[Type, ArgumentManagement]]:
+        return self.__handle.handle_arguments()
 
-    def generate_ir(self, flow: F, args: Sequence[IRValue]) -> IRValue:
+    def handle_return(self) -> Tuple[Type, ReturnManagement]:
+        return self.__handle.handle_return()
+
+    def generate_handle_ir(self, flow: F, args: Sequence[IRValue]) -> IRValue:
         value = flow.upsert_global_binding(self.__id, self.__type, self.__address)
         return flow.builder.call(flow.builder.load(value), args)
 
 
-class CastHandle(Handle):
+class BaseTransferUnaryHandle(Handle[F], Generic[F]):
     """
-    Create a handle that casts the parameters and return value of one handle to another.
+    This handle serves as a base for unary operators that can operate in borrowing and owning modes.
 
-    Each parameter is converted separately and all conversions are 1:1; that is, each parameter is converted using a
-    handle that takes exactly one parameter and there is one handle for each parameter in the handle being cast in
-    addition to one for the return type.
-
-    It is not normally desirable to construct cast handles directly. The `cast` method on a handle will use the types to
-    resolve the conversions automatically.
-    """
-    __handle: Handle
-    __ret_handle: Handle
-    __arg_handles: List[Handle]
-
-    def __init__(self, handle: Handle, ret_handle: Handle, arg_handles: List[Handle]):
-        super().__init__()
-        handle.register(self)
-        ret_handle.register(self)
-        for arg_handle in arg_handles:
-            arg_handle.register(self)
-        self.__handle = handle
-        self.__ret_handle = ret_handle
-        self.__arg_handles = copy.copy(arg_handles)
-        (ret_type, arg_types) = handle.function_type()
-        assert (ret_type,) == ret_handle.function_type()[1], "Return type conversion doesn't match handle."
-        assert len(arg_types) == len(arg_handles), "Argument conversions don't match handle."
-        for index in range(0, len(arg_types)):
-            handle_output = arg_handles[index].function_type()[0]
-            assert arg_types[index] == handle_output,\
-                f"Expected {arg_types[index]} at argument {index} but got {handle_output} from {arg_handles[index]}."
-
-    def __str__(self) -> str:
-        arg_str = ", ".join(str(h) for h in self.__arg_handles)
-        return f"Cast ({self.__handle}) using {self.__ret_handle} ({arg_str})"
-
-    def function_type(self) -> (Type, Sequence[Type]):
-        return self.__ret_handle.function_type()[0], tuple(a.function_type()[1][0] for a in self.__arg_handles)
-
-    def generate_ir(self, flow: F, args: Sequence[IRValue]) -> IRValue:
-        output_args = [flow.call(handle, (value,)) for (handle, value) in zip(self.__arg_handles, args)]
-        return flow.call(self.__ret_handle, (flow.call(self.__handle, output_args),))
-
-
-class IdentityHandle(Handle[ControlFlow]):
-    """
-    Create a handle which takes one input, of a particular type, and returns that value.
+    There are several operations that take a single input, do some trivial operation that does not change the lifetimes
+    of that input, and returns the modified output. These operations are often agnostic to whether the input is owned or
+    borrowed. At the most trivial, the identity handle that simply returns its input falls in this category. This handle
+    provides the necessary implementation for lifetime and transfer handling for these operations.
     """
     __ret: Type
     __arg: Type
+    __management: ReturnManagement
 
-    def __init__(self, ty: Type, arg_ty: Union[Type, None] = None):
+    def __init__(self, ty: Type, arg_ty: Type, transfer: ReturnManagement):
         super().__init__()
         self.__ret = ty
-        self.__arg = arg_ty or ty
-        if arg_ty:
-            assert arg_ty.machine_type() == ty.machine_type(), f"Cannot do no-op conversion from {arg_ty} to {ty}"
+        self.__arg = arg_ty
+        self.__management = transfer
+
+    @property
+    def return_management(self) -> ReturnManagement:
+        return self.__management
 
     def __str__(self) -> str:
-        return f"Identity {self.__arg} → {self.__ret}"
+        return f"{self._name()}[{self.__management.name}]({self.__arg}) → {self.__ret}"
 
-    def function_type(self) -> (Type, Sequence[Type]):
-        return self.__ret, (self.__arg,)
+    def handle_arguments(self) -> Sequence[Tuple[Type, ArgumentManagement]]:
+        arg_management = (ArgumentManagement.BORROW_CAPTURE_PARENTS
+                          if self.__management == ReturnManagement.BORROW else
+                          ArgumentManagement.TRANSFER_CAPTURE_PARENTS)
+        return (self.__arg, arg_management),
 
-    def generate_ir(self, flow: F, args: Sequence[IRValue]) -> IRValue:
+    def handle_return(self) -> Tuple[Type, ReturnManagement]:
+        return self.__ret, self.__management
+
+    def _name(self) -> str:
+        raise NotImplementedError()
+
+
+class Clone(Handle[ControlFlow]):
+    """
+    Create a handle which takes one input and returns a copy/cloned value.
+    """
+    __type: Type
+
+    def __init__(self, ty: Type):
+        super().__init__()
+        self.__type = ty
+
+    def __str__(self) -> str:
+        return f"Clone[{self.__type}]"
+
+    def generate_handle_ir(self, flow: F, args: Sequence[IRValue]) -> Union[IRValue, TemporaryValue]:
         (arg, ) = args
-        return arg
+        return self.__type.clone(flow, arg)
 
+    def handle_arguments(self) -> Sequence[Tuple[Type, ArgumentManagement]]:
+        if self.__type.clone_is_self_contained():
+            arg_management = ArgumentManagement.BORROW_TRANSIENT
+        else:
+            arg_management = ArgumentManagement.BORROW_CAPTURE_PARENT
+        return (self.__type, arg_management),
 
-class PreprocessArgumentHandle(Handle):
-    """
-    Preprocesses a single argument of a handle using another handle.
-
-    Unlike casting operations, this does not require a 1:1 match between handle types. Given a handle:
-    `t f(t0, t1, t2, t3)` and `t2 g(s0, s1, s2)`, then preprocessing `f` using `g` at index 2, will produce a handle
-    with the signature `t p(t0, t1, s0, s1, s2, t3)` which will behave as if `f(t0, t1, g(s0, s1, s2, s3), t3)`.
-    """
-    __handle: Handle
-    __preprocessor: Handle
-    __index: int
-
-    def __init__(self, handle: Handle, index: int, preprocessor: Handle):
-        super().__init__()
-        handle.register(self)
-        preprocessor.register(self)
-        self.__handle = handle
-        self.__preprocessor = preprocessor
-        self.__index = index
-        (_, args) = handle.function_type()
-        handle_type = args[index]
-        preprocessor_type = preprocessor.function_type()[0]
-        assert handle_type == preprocessor_type,\
-            f"Preprocessor produces {preprocessor_type} but handle expects {handle_type}"
-
-    def function_type(self) -> (Type, Sequence[Type]):
-        (handle_ret, handle_args) = self.__handle.function_type()
-        (_, preprocess_args) = self.__preprocessor.function_type()
-        args = []
-        args.extend(handle_args[0:self.__index])
-        args.extend(preprocess_args)
-        args.extend(handle_args[self.__index + 1:])
-        return handle_ret, args
-
-    def generate_ir(self, flow: F, args: Sequence[IRValue]) -> IRValue:
-        preprocess_arg_len = len(self.__preprocessor.function_type()[1])
-        handle_args = []
-        handle_args.extend(args[0:self.__index])
-        handle_args.append(
-            flow.call(self.__preprocessor, args[self.__index:self.__index + preprocess_arg_len]))
-        handle_args.extend(args[self.__index + preprocess_arg_len:])
-        return flow.call(self.__handle, handle_args)
-
-    def __str__(self) -> str:
-        return f"Preprocess ({self.__handle}) at {self.__index} with ({self.__preprocessor})"
-
-
-class IgnoreArgumentsHandle(Handle):
-    """
-    Creates a new handle that discards arguments before calling another handle.
-
-    Depending on perspective, this drops or inserts arguments into a handle to allow it to discard unnecessary
-    arguments. Given a handle `t f(t0, t1)`, dropping `e0` at index 1 would produce a handle with the signature:
-    `t d(t0, e0, t1)`. Since arguments can be inserted at the end of the signature, the index can be the length of the
-    original handle's argument list.
-    """
-    __handle: Handle
-    __extra_args: Sequence[Type]
-    __index: int
-
-    def __init__(self, handle: Handle, index: int, *extra_args: Type):
-        super().__init__()
-        handle.register(self)
-        self.__handle = handle
-        self.__extra_args = extra_args
-        self.__index = index
-        (_, args) = handle.function_type()
-        assert 0 <= index <= len(args), f"Index {index} for drop arguments is out of range [0, {len(args)}]"
-
-    def function_type(self) -> (Type, Sequence[Type]):
-        (handle_ret, handle_args) = self.__handle.function_type()
-        args = []
-        args.extend(handle_args[0:self.__index])
-        args.extend(self.__extra_args)
-        args.extend(handle_args[self.__index:len(handle_args)])
-        return handle_ret, args
-
-    def generate_ir(self, flow: F, args: Sequence[IRValue]) -> IRValue:
-        handle_args = []
-        handle_args.extend(args[0:self.__index])
-        handle_args.extend(args[self.__index + len(self.__extra_args):])
-        return flow.call(self.__handle, handle_args)
-
-    def __str__(self) -> str:
-        return f"Ignore {self.__extra_args} at {self.__index} in {self.__handle}"
+    def handle_return(self) -> Tuple[Type, ReturnManagement]:
+        return self.__type, ReturnManagement.TRANSFER
 
 
 class DerefPointer(Handle):
@@ -827,7 +1223,7 @@ class DerefPointer(Handle):
     __container_type: Type
     __target_type: Type
 
-    def __init__(self, container_type: Type, target_ty: Union[Type, None] = None):
+    def __init__(self, container_type: Type, target_ty: Optional[Type] = None):
         super().__init__()
         self.__container_type = container_type
         if target_ty is None:
@@ -843,12 +1239,184 @@ class DerefPointer(Handle):
             assert container_llvm_type.pointee == target_ty.machine_type(),\
                 f"Container points to {container_llvm_type.pointee} but target type is {target_ty.machine_type()}"
 
-    def generate_ir(self, flow: F, args: Sequence[IRValue]) -> IRValue:
+    def __str__(self) -> str:
+        return f"Deref({self.__container_type}) → {self.__target_type}"
+
+    def generate_handle_ir(self, flow: F, args: Sequence[IRValue]) -> Union[IRValue, TemporaryValue]:
         return flow.builder.load(args[0])
 
-    def function_type(self) -> (Type, Sequence[Type]):
-        return self.__target_type, (self.__container_type,)
+    def handle_arguments(self) -> Sequence[Tuple[Type, ArgumentManagement]]:
+        return (self.__container_type, ArgumentManagement.BORROW_CAPTURE),
+
+    def handle_return(self) -> Tuple[Type, ReturnManagement]:
+        return self.__target_type, ReturnManagement.BORROW
+
+
+class Identity(BaseTransferUnaryHandle[ControlFlow]):
+    """
+    Create a handle which takes one input, of a particular type, and returns that value.
+    """
+
+    def __init__(self, ty: Type, arg_ty: Optional[Type] = None, transfer: ReturnManagement = ReturnManagement.BORROW):
+        super().__init__(ty, arg_ty or ty, transfer)
+        if arg_ty:
+            assert arg_ty.machine_type() == ty.machine_type(), f"Cannot do no-op conversion from {arg_ty} to {ty}"
+
+    def generate_handle_ir(self, flow: F, args: Sequence[IRValue]) -> Union[IRValue, TemporaryValue]:
+        (arg, ) = args
+        return arg
+
+    def _name(self) -> str:
+        return "Identity"
+
+
+IgnoreCapture = enum.Enum('IgnoreCapture', ['TRANSIENT', 'CAPTURE', 'CAPTURE_PARENTS'])
+
+
+class IgnoreArguments(Handle):
+    """
+    Creates a new handle that discards arguments before calling another handle.
+
+    Depending on perspective, this drops or inserts arguments into a handle to allow it to discard unnecessary
+    arguments. Given a handle `t f(t0, t1)`, dropping `e0` at index 1 would produce a handle with the signature:
+    `t d(t0, e0, t1)`. Since arguments can be inserted at the end of the signature, the index can be the length of the
+    original handle's argument list.
+
+    All arguments are borrowed. If you need to drop them, apply a take ownership handle after.
+    """
+    __handle: Handle
+    __extra_args: Sequence[Type]
+    __index: int
+    __capture: IgnoreCapture
+
+    def __init__(self, handle: Handle, index: int, *extra_args: Type, capture: IgnoreCapture = IgnoreCapture.TRANSIENT):
+        super().__init__()
+        handle.register(self)
+        self.__handle = handle
+        self.__extra_args = extra_args
+        self.__index = index
+        self.__capture = capture
+        num_args = len(handle.handle_arguments())
+        assert 0 <= index <= num_args, f"Index {index} for drop arguments is out of range [0, {num_args}]"
 
     def __str__(self) -> str:
-        return f"Deref {self.__container_type} → {self.__target_type}"
+        args = ', '.join(str(a) for a in self.__extra_args)
+        return f"Ignore[{self.__capture.name}]({args}) at {self.__index} of {self.__handle}"
 
+    def generate_handle_ir(self, flow: F, args: Sequence[IRValue]) -> Union[IRValue, TemporaryValue]:
+        handle_args = []
+        handle_args.extend((a, (index,)) for index, a in enumerate(args[0:self.__index]))
+        handle_args.extend((a, (self.__index + index,))
+                           for index, a in enumerate(args[self.__index + len(self.__extra_args):]))
+        return flow.call(self.__handle, handle_args)
+
+    def handle_arguments(self) -> Sequence[Tuple[Type, ArgumentManagement]]:
+        if self.__capture == IgnoreCapture.TRANSIENT:
+            management = ArgumentManagement.BORROW_TRANSIENT
+        elif self.__capture == IgnoreCapture.CAPTURE:
+            management = ArgumentManagement.BORROW_CAPTURE
+        else:
+            management = ArgumentManagement.BORROW_CAPTURE_PARENTS
+        original = self.__handle.handle_arguments()
+        output = []
+        output.extend(original[0:self.__index])
+        output.extend((t, management) for t in self.__extra_args)
+        output.extend(original[self.__index:])
+        return output
+
+    def handle_return(self) -> Tuple[Type, ReturnManagement]:
+        return self.__handle.handle_return()
+
+
+class PreprocessArgument(Handle):
+    """
+    Preprocesses a single argument of a handle using another handle.
+
+    Unlike casting operations, this does not require a 1:1 match between handle types. Given a handle:
+    `t f(t0, t1, t2, t3)` and `t2 g(s0, s1, s2)`, then preprocessing `f` using `g` at index 2, will produce a handle
+    with the signature `t p(t0, t1, s0, s1, s2, t3)` which will behave as if `f(t0, t1, g(s0, s1, s2, s3), t3)`.
+    """
+    __handle: Handle
+    __preprocessor: Handle
+    __index: int
+    __needs_copy: bool
+
+    def __init__(self, handle: Handle, index: int, preprocessor: Handle):
+        super().__init__()
+        handle.register(self)
+        preprocessor.register(self)
+        self.__handle = handle
+        self.__preprocessor = preprocessor
+        self.__index = index
+        (arg_type, arg_management) = handle.handle_arguments()[index]
+        (preprocessor_type, preprocessor_management) = preprocessor.handle_return()
+        assert arg_type == preprocessor_type,\
+            f"Preprocessor {preprocessor} produces {preprocessor_type} but handle {handle} expects {arg_type}"
+        self.__needs_copy = (preprocessor_management == ReturnManagement.BORROW and arg_management in
+                             (ArgumentManagement.TRANSFER_TRANSIENT, ArgumentManagement.TRANSFER_CAPTURE_PARENTS))
+
+    def __str__(self) -> str:
+        return f"Preprocess ({self.__handle}) at {self.__index} with ({self.__preprocessor})"
+
+    def generate_handle_ir(self, flow: F, args: Sequence[IRValue]) -> Union[IRValue, TemporaryValue]:
+        preprocess_arg_len = len(self.__preprocessor.handle_arguments())
+        preprocessed_result = flow.call(self.__preprocessor, [(args[idx], (idx,)) for idx in
+                                                              range(self.__index, self.__index + preprocess_arg_len)])
+        if self.__needs_copy:
+            preprocessed_result = self.__preprocessor.handle_return()[0].clone(flow, preprocessed_result.ir_value)
+        handle_args = []
+        handle_args.extend((args[idx], (idx,)) for idx in range(self.__index))
+        handle_args.append(preprocessed_result)
+        handle_args.extend((args[idx], (idx,)) for idx in range(self.__index + preprocess_arg_len, len(args)))
+        return flow.call(self.__handle, handle_args)
+
+    def handle_arguments(self) -> Sequence[Tuple[Type, ArgumentManagement]]:
+        handle_args = self.__handle.handle_arguments()
+        preprocess_args = self.__preprocessor.handle_arguments()
+        args = []
+        args.extend(handle_args[0:self.__index])
+        args.extend(preprocess_args)
+        args.extend(handle_args[self.__index + 1:])
+        return args
+
+    def handle_return(self) -> Tuple[Type, ReturnManagement]:
+        return self.__handle.handle_return()
+
+
+class TakeOwnership(Handle):
+    """
+    Create a handle which wraps another handle and takes ownership of arguments and frees them immediately after the
+    inner handle finishes.
+    """
+    __handle: Handle
+    __owned_args: Sequence[int]
+
+    def __init__(self, handle: Handle, *owned_args: int):
+        super().__init__()
+        self.__handle = handle
+        self.__owned_args = owned_args
+        assert not owned_args or max(owned_args) < len(handle.handle_arguments()),\
+            f"Arguments {owned_args} out of range for {handle}"
+        for idx, (arg_type, arg_management) in enumerate(handle.handle_arguments()):
+            assert arg_management != ArgumentManagement.BORROW_CAPTURE or idx not in owned_args, \
+                f"Handle {handle} captures argument {idx}; taking ownership would be a lifetime violation"
+
+    def __str__(self) -> str:
+        return f"TakeOwnership[{', '.join(str(a) for a in self.__owned_args)}] of {self.__handle}"
+
+    def generate_handle_ir(self, flow: F, args: Sequence[IRValue]) -> Union[IRValue, TemporaryValue]:
+        result = flow.call(self.__handle, [(a, (i,)) for i, a in enumerate(args)])
+        for owned_argument in self.__owned_args:
+            flow.drop_arg(owned_argument)
+        return result
+
+    def handle_arguments(self) -> Sequence[Tuple[Type, ArgumentManagement]]:
+        sub = {
+            ArgumentManagement.BORROW_TRANSIENT: ArgumentManagement.TRANSFER_TRANSIENT,
+            ArgumentManagement.BORROW_CAPTURE_PARENTS: ArgumentManagement.TRANSFER_CAPTURE_PARENTS,
+        }
+        return [(t, sub.get(a, a) if idx in self.__owned_args else a)
+                for idx, (t, a) in enumerate(self.__handle.handle_arguments())]
+
+    def handle_return(self) -> Tuple[Type, ReturnManagement]:
+        return self.__handle.handle_return()

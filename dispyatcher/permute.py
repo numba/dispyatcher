@@ -1,22 +1,22 @@
 import itertools
-from typing import Sequence, TypeVar
+from typing import Dict, List, Sequence, Tuple, TypeVar, Union
 
 from llvmlite.ir import Value as IRValue
 
-from dispyatcher import Handle, Type, PreprocessArgumentHandle, F
+from dispyatcher import ArgumentManagement, F, Handle, PreprocessArgument, ReturnManagement, TemporaryValue, Type
 
 T = TypeVar('T')
 
 
 class ArgumentPermutation:
-    def check(self, arguments: Sequence[Type]) -> bool:
+    def check(self, arguments: Sequence[Tuple[Type, ArgumentManagement]]) -> bool:
         pass
 
     def permute(self, items: Sequence[T]) -> Sequence[T]:
         pass
 
 
-class PermuteArgumentsHandle(Handle):
+class PermuteArguments(Handle):
     """
     Creates a new handle that permutes arguments before calling another handle.
 
@@ -24,30 +24,36 @@ class PermuteArgumentsHandle(Handle):
     """
     __handle: Handle
     __permutations: Sequence[ArgumentPermutation]
+    __is_argument_transferred: Dict[int, bool]
+    __return_lifetime: List[Tuple[int, bool]]
 
     def __init__(self, handle: Handle, *permutations: ArgumentPermutation):
         super().__init__()
         handle.register(self)
         self.__handle = handle
         self.__permutations = permutations
-        (_, args) = handle.function_type()
+        args = handle.handle_arguments()
         for permutation in permutations:
             assert permutation.check(args), f"Permutation {permutation} is not acceptable for handle with args {args}"
-
-    def function_type(self) -> (Type, Sequence[Type]):
-        (handle_ret, handle_args) = self.__handle.function_type()
-        for permutation in self.__permutations:
-            handle_args = permutation.permute(handle_args)
-
-        return handle_ret, handle_args
-
-    def generate_ir(self, flow: F, args: Sequence[IRValue]) -> IRValue:
-        for permutation in self.__permutations:
             args = permutation.permute(args)
-        return flow.call(self.__handle, args)
 
     def __str__(self) -> str:
-        return f"Permute arguments of {self.__handle} using {(str(p) for p in self.__permutations)}"
+        return f"Permute[{(str(p) for p in self.__permutations)}] {self.__handle}"
+
+    def handle_arguments(self) -> Sequence[Tuple[Type, ArgumentManagement]]:
+        args = self.__handle.handle_arguments()
+        for permutation in self.__permutations:
+            args = permutation.permute(args)
+        return args
+
+    def handle_return(self) -> Tuple[Type, ReturnManagement]:
+        return self.__handle.handle_return()
+
+    def generate_handle_ir(self, flow: F, args: Sequence[IRValue]) -> Union[TemporaryValue, IRValue]:
+        call_args = [(arg, (idx,)) for arg, idx in enumerate(args)]
+        for permutation in self.__permutations:
+            call_args = permutation.permute(call_args)
+        return flow.call(self.__handle, call_args)
 
 
 class CopyArgument(ArgumentPermutation):
@@ -63,7 +69,12 @@ class CopyArgument(ArgumentPermutation):
         assert count > 0, "Invalid count"
         assert chunk > 0, "Invalid chunk size"
 
-    def check(self, arguments: Sequence[Type]) -> bool:
+    def check(self, arguments: Sequence[Tuple[Type, ArgumentManagement]]) -> bool:
+        for idx, (_, arg_management) in enumerate(arguments):
+            assert arg_management in (ArgumentManagement.BORROW_TRANSIENT,
+                                      ArgumentManagement.BORROW_CAPTURE,
+                                      ArgumentManagement.BORROW_CAPTURE_PARENTS),\
+                f"Copy arguments can only be used for borrowed arguments but {idx} is {arg_management}"
         return self.__index + self.__chunk < len(arguments)
 
     def permute(self, items: Sequence[T]) -> Sequence[T]:
@@ -73,6 +84,18 @@ class CopyArgument(ArgumentPermutation):
             items[self.__index: self.__index + self.__chunk], self.__count)))
         output.extend(items[self.__index:])
         return output
+
+
+class ReverseArguments(ArgumentPermutation):
+
+    def check(self, arguments: Sequence[Type]) -> bool:
+        return True
+
+    def permute(self, items: Sequence[T]) -> Sequence[T]:
+        return list(reversed(items))
+
+    def __str__(self) -> str:
+        return "Reverse"
 
 
 class SwapArguments(ArgumentPermutation):
@@ -106,47 +129,32 @@ class SwapArguments(ArgumentPermutation):
         return f"Swap [{self.__source}:{src_end}] and [{self.__destination}:{dest_end}]"
 
 
-class ReverseArguments(ArgumentPermutation):
-
-    def check(self, arguments: Sequence[Type]) -> bool:
-        return True
-
-    def permute(self, items: Sequence[T]) -> Sequence[T]:
-        return list(reversed(items))
-
-    def __str__(self) -> str:
-        return "Reverse"
-
-
 def implode_args(handle: Handle, index: int, *preprocessors: Handle) -> Handle:
     """
-    Takes a handle and preprocess arguments duplicating a input arguments.
+    Takes a handle and preprocess arguments duplicating input arguments.
 
     This is intended to be a convenient way to unpack a structure into individual arguments.
 
     Given a handle `t f(t0, t1, t2, t3)` and preprocessors `t1 a(x)`, `t2 b(x)`, calling `implode_args(f, 1, a, b)`,
-    will create a handle `t i(t0, x, t3)` equivalent to `I(v0, v1, v2) = f(v0, a(v1), b(v1), v2)`
+    will create a handle `t i(t0, x, t3)` equivalent to `i(v0, v1, v2) = f(v0, a(v1), b(v1), v2)`
     :param handle: the handle to transform
     :param index: the start position in the argument to handle to replace
     :param preprocessors: the number of arguments to replace with the output of the provided handles. The handles must
     all have the same arguments
     :return: the preprocessed handle
     """
-    (handle_ret, handle_args) = handle.function_type()
-    assert 0 <= index < len(handle_args), "Index is out of range"
-    assert index + len(preprocessors), "Too many preprocessor for handle"
     if len(preprocessors) == 0:
         return handle
+    handle_args = handle.handle_arguments()
+    assert 0 <= index < len(handle_args), "Index is out of range"
+    assert index + len(preprocessors) < len(handle_args), "Too many preprocessor for handle"
     required_prep_args = None
     for prep_idx, preprocessor in enumerate(preprocessors):
-        (prep_ret, prep_args) = preprocessor.function_type()
+        prep_args = preprocessor.handle_arguments()
         if required_prep_args is None:
             required_prep_args = prep_args
         else:
             assert prep_args == required_prep_args,\
                 f"Arguments {prep_args} for preprocessor {prep_idx} do not match previous {required_prep_args}"
-        required_arg = handle_args[index + prep_idx]
-        assert prep_ret == required_arg, f"Preprocessor {prep_idx} emits {prep_ret}, but {required_arg} expected"
-        handle = PreprocessArgumentHandle(handle, index + prep_idx, preprocessor)
-    return PermuteArgumentsHandle(handle, CopyArgument(index, len(preprocessors), len(required_prep_args)))
-
+        handle = PreprocessArgument(handle, index + prep_idx * len(required_prep_args), preprocessor)
+    return PermuteArguments(handle, CopyArgument(index, len(preprocessors), len(required_prep_args)))

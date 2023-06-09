@@ -1,9 +1,9 @@
-from typing import List, Sequence, Dict, Any, Iterable, Tuple, Union
+from typing import List, Sequence, Dict, Any, Iterable, Tuple, Optional
 
 import llvmlite.ir
 from llvmlite.ir import IRBuilder, Value as IRValue
 
-from dispyatcher import Handle, Type, F
+from dispyatcher import Handle, Type, F, ReturnManagement, ArgumentManagement
 
 
 class HashValueGuard:
@@ -83,10 +83,10 @@ class HashValueDispatcher(Handle):
     At least one input must have a guard.
     """
     __dispatch: Dict[int, List[Tuple[Handle, Sequence[Any]]]]
-    __guards: Sequence[Union[HashValueGuard, None]]
+    __guards: Sequence[Optional[HashValueGuard]]
     __fallback: Handle
 
-    def __init__(self, fallback: Handle, *guards: Union[HashValueGuard, None]):
+    def __init__(self, fallback: Handle, *guards: Optional[HashValueGuard]):
         """
         Construct a new hash-dispatching handle
         :param fallback: the handle to execute if none of the special cases match; all other handles must match the type
@@ -99,11 +99,11 @@ class HashValueDispatcher(Handle):
         self.__fallback = fallback
         self.__guards = guards
         fallback.register(self)
-        handle_inputs = fallback.function_type()[1]
+        handle_inputs = fallback.handle_arguments()
         assert len(handle_inputs) > 0, "Cannot hash on no parameters"
         assert any(guard is not None for guard in guards), "No real guards are provided"
         assert len(guards) == len(handle_inputs), "Number of guards do not match number of parameters"
-        for index, (guard, arg_type) in enumerate(zip(guards, handle_inputs)):
+        for index, (guard, (arg_type, _)) in enumerate(zip(guards, handle_inputs)):
             assert guard.compatible(arg_type), f"Guard {guard} at index {index} is not compatible with {arg_type}"
 
     @property
@@ -112,21 +112,22 @@ class HashValueDispatcher(Handle):
 
     @fallback.setter
     def fallback(self, handle: Handle):
-        assert handle.function_type() == self.__fallback.function_type(), "Handle does not match existing signature."
+        assert (tuple(handle.handle_arguments()) == tuple(self.__fallback.handle_arguments()) and
+                handle.handle_return() == self.__fallback.handle_return()), "Handle does not match existing signature."
         self.__fallback.unregister(self)
         handle.register(self)
         self.__fallback = handle
         self.invalidate()
 
     def __insert_one(self, key: Sequence[Any], target: Handle):
-        (self_ret_type, self_arg_types) = self.__fallback.function_type()
-        (target_ret_type, target_arg_types) = target.function_type()
-        assert target_ret_type == self_ret_type,\
-            f"Return type must match. Got {target_ret_type} expected {self_ret_type}."
-        assert len(key) == len(self_arg_types), "Number of arguments must match key sequence"
+        self_args = self.handle_arguments()
+        assert self.handle_return() == target.handle_return(),\
+            f"Return type must match. Got {target.handle_return()}, expected {self.handle_return()}."
+        assert tuple(self_args) == tuple(target.handle_arguments()),\
+            f"Arguments must match. Got {target.handle_arguments()}, expected {self_args}."
+        assert len(key) == len(self_args), "Number of arguments must match key sequence"
         value = 1
-        for index, (guard, self_arg_type, target_arg, target_key) in enumerate(zip(self.__guards, self_arg_types,
-                                                                                   target_arg_types, key)):
+        for index, (guard, self_arg_type, target_key) in enumerate(zip(self.__guards, self_args, key)):
             if guard is not None:
                 value *= guard.compute_hash(target_key)
             elif target_key is not None:
@@ -181,11 +182,14 @@ class HashValueDispatcher(Handle):
             self.__insert_one(key, target)
         self.invalidate()
 
-    def function_type(self) -> (Type, Sequence[Type]):
-        return self.__fallback.function_type()
+    def handle_arguments(self) -> Sequence[Tuple[Type, ArgumentManagement]]:
+        return self.__fallback.handle_arguments()
 
-    def generate_ir(self, flow: F, args: Sequence[IRValue]) -> IRValue:
-        (self_ret_type, self_arg_types) = self.__fallback.function_type()
+    def handle_return(self) -> Tuple[Type, ReturnManagement]:
+        return self.__fallback.handle_return()
+
+    def generate_handle_ir(self, flow: F, args: Sequence[IRValue]) -> IRValue:
+        (self_ret_type, _) = self.__fallback.handle_return()
 
         value = llvmlite.ir.Constant(llvmlite.ir.IntType(32), 1)
         for index, (guard, arg_value) in enumerate(zip(self.__guards, args)):
@@ -211,12 +215,12 @@ class HashValueDispatcher(Handle):
                         flow.builder.cbranch(comparison, block, next_block)
                         flow.builder.position_at_end(block)
 
-                result = flow.call(handle, args)
+                result = flow.call_and_pluck(handle, [(arg, (idx,)) for idx, arg in enumerate(args)])
                 results.append((result, flow.builder.basic_block))
                 flow.builder.branch(final_block)
                 flow.builder.position_at_end(next_block)
         flow.builder.position_at_end(fallback_block)
-        result = flow.call(self.__fallback, args)
+        result = flow.call_and_pluck(self.__fallback, [(arg, (idx,)) for idx, arg in enumerate(args)])
         results.append((result, flow.builder.basic_block))
         flow.builder.branch(final_block)
 

@@ -1,8 +1,20 @@
-from typing import Sequence, Union
+from typing import Optional, Sequence, Tuple
+from llvmlite.ir import ArrayType, BaseStructType, IntType, PointerType, Value as IRValue
+from dispyatcher import ArgumentManagement, ControlFlow, F, Handle, Type, ReturnManagement
 
-from llvmlite.ir import ArrayType, BaseStructType, PointerType, IntType, Value as IRValue
 
-from dispyatcher import Handle, Type, F
+class GetMember(Type):
+    """
+    A type which has the layout of a struct (a collection of heterogeneously typed values)
+    """
+
+    def member_target(self, member: int) -> Type:
+        """
+        Get the type of a member by index
+        :param member: the member index
+        :return: the type of that member
+        """
+        pass
 
 
 class GetPointer(Type):
@@ -21,24 +33,61 @@ class GetPointer(Type):
 
     def target_pointer(self) -> Type:
         """
-        Gets type of an element in an array-like structure
+        Gets the type of an element in an array-like structure
         :return: the element type
         """
         pass
 
 
-class GetMember(Type):
+class ArrayElementPointer(Handle[ControlFlow]):
     """
-    A type which has the layout of a struct (a collection of heterogeneously typed values)
-    """
+    A handle that takes an array and an index access the element at the provided index.
 
-    def member_target(self, member: int) -> Type:
+    Unlike `GetElementPointer`, this operates on a dynamic index. No bounds checking is provided.
+    """
+    __container_type: Type
+    __index_type: Type
+    __element_type: Type
+
+    def __init__(self, container_type: Type, index_type: Type, element_type: Optional[Type] = None):
         """
-        Get the type of a member by index
-        :param member: the member index
-        :return: the type of that member
+        Creates a new array lookup handle
+        :param container_type: the type of the array; it must be an LLVM array or pointer type
+        :param index_type: the type of the index, which must have an LLVM type that is a 32-bit or 64-bit integer
+        :param element_type: the type of the element being pointed to; if none, the container type must implement
+        `GetPointer`
         """
-        pass
+        super().__init__()
+        self.__container_type = container_type
+        self.__index_type = index_type
+        assert isinstance(index_type.machine_type(), IntType), f"{index_type} is not an integer type"
+        assert index_type.machine_type().width in (32, 64), f"{index_type} is not a valid pointer size"
+        container_llvm_type = container_type.machine_type()
+        assert isinstance(container_llvm_type, (ArrayType, PointerType)),\
+            f"Type {container_llvm_type} is not a container"
+        if element_type is None:
+            if isinstance(container_type, GetPointer):
+                self.__target_type = container_type.target_pointer()
+            else:
+                raise TypeError("Container type does not implement get-pointer and no target type is not provided")
+        else:
+            self.__element_type = element_type
+            target_type = container_llvm_type.element.as_pointer()
+            assert target_type == element_type.machine_type(),\
+                f"Array elements {target_type} do not match expected type {element_type.machine_type()}"
+
+    def __str__(self) -> str:
+        return f"ArrayElementPointer({self.__container_type}, {self.__index_type}) → {self.__element_type}"
+
+    def generate_handle_ir(self, flow: F, args: Sequence[IRValue]) -> IRValue:
+        return flow.builder.gep(args[0], args[1])
+
+    def handle_arguments(self) -> Sequence[Tuple[Type, ArgumentManagement]]:
+        return ((self.__container_type, ArgumentManagement.BORROW_CAPTURE),
+                (self.__index_type, ArgumentManagement.BORROW_TRANSIENT))
+
+    def handle_return(self) -> Tuple[Type, ReturnManagement]:
+        return self.__element_type, ReturnManagement.BORROW
 
 
 class GetElementPointer(Handle):
@@ -51,7 +100,7 @@ class GetElementPointer(Handle):
     __container_type: Type
     __field_type: Type
 
-    def __init__(self, container_type: Type, index: int, field_ty: Union[Type, None] = None):
+    def __init__(self, container_type: Type, index: int, field_ty: Optional[Type] = None):
         """
         Create a handle that can access the contents of a container type
         :param container_type: the type of the container, which must have an LLVM type of struct, pointer, or array
@@ -91,60 +140,14 @@ class GetElementPointer(Handle):
         assert inner_type == field_ty.machine_type(),\
             f"Field type {inner_type} does not match expected type {field_ty.machine_type()}"
 
-    def generate_ir(self, flow: F, args: Sequence[IRValue]) -> IRValue:
+    def __str__(self) -> str:
+        return f"GetElementPointer[{self.__index}]({self.__container_type}) → {self.__field_type}"
+
+    def generate_handle_ir(self, flow: F, args: Sequence[IRValue]) -> IRValue:
         return flow.builder.gep(args[0], IntType(32)(self.__index))
 
-    def function_type(self) -> (Type, Sequence[Type]):
-        return self.__field_type, (self.__container_type,)
+    def handle_arguments(self) -> Sequence[Tuple[Type, ArgumentManagement]]:
+        return (self.__container_type, ArgumentManagement.BORROW_CAPTURE),
 
-    def __str__(self) -> str:
-        return f"Element {self.__index} {self.__field_type} of {self.__container_type}"
-
-
-class ArrayElementPointer(Handle):
-    """
-    A handle that takes an array and an index access the element at the provided index.
-
-    Unlike `GetElementPointer`, this operates on a dynamic index. No bounds checking is provided.
-    """
-    __container_type: Type
-    __index_type: Type
-    __element_type: Type
-
-    def __init__(self, container_type: Type, index_type: Type, element_type: Union[Type, None] = None):
-        """
-        Creates a new array lookup handle
-        :param container_type: the type of the array; it must be an LLVM array or pointer type
-        :param index_type: the type of the index, which must have an LLVM type that is a 32-bit or 64-bit integer
-        :param element_type: the type of the element being pointed to; if none, the container type must implement
-        `GetPointer`
-        """
-        super().__init__()
-        self.__container_type = container_type
-        self.__index_type = index_type
-        assert isinstance(index_type.machine_type(), IntType), f"{index_type} is not an integer type"
-        assert index_type.machine_type().width in (32, 64), f"{index_type} is not a valid pointer size"
-        container_llvm_type = container_type.machine_type()
-        assert isinstance(container_llvm_type, (ArrayType, PointerType)),\
-            f"Type {container_llvm_type} is not a container"
-        if element_type is None:
-            if isinstance(container_type, GetPointer):
-                self.__target_type = container_type.target_pointer()
-            else:
-                raise TypeError("Container type does not implement get-pointer and no target type is not provided")
-        else:
-            self.__element_type = element_type
-            target_type = container_llvm_type.element.as_pointer()
-            assert target_type == element_type.machine_type(),\
-                f"Array elements {target_type} do not match expected type {element_type.machine_type()}"
-
-    def generate_ir(self, flow: F, args: Sequence[IRValue]) -> IRValue:
-        return flow.builder.gep(args[0], args[1])
-
-    def function_type(self) -> (Type, Sequence[Type]):
-        return self.__element_type, (self.__container_type, self.__index_type)
-
-    def __str__(self) -> str:
-        return f"Array element pointer {self.__container_type} with {self.__index_type} yielding {self.__element_type}"
-
-
+    def handle_return(self) -> Tuple[Type, ReturnManagement]:
+        return self.__field_type, ReturnManagement.BORROW

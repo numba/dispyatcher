@@ -1,25 +1,28 @@
-import ctypes
-from typing import Union, List, Sequence, Iterable, Tuple, TypeVar, Generic, Dict
+from llvmlite.ir import Block, Value as IRValue
+from typing import Generic, Iterable, List, Optional, Sequence, Set, Tuple, TypeVar
 
-from llvmlite.ir import IRBuilder, Value as IRValue, Block
-
-from dispyatcher import InvalidationTarget, Handle, Type, ControlFlow, F
+from dispyatcher import ArgumentManagement, F, Handle, InvalidationTarget, ReturnManagement, Type
 
 
-class RepackingFlow(ControlFlow):
+class RepackingState:
+    __flow: F
     __fallback_block: Block
 
-    def __init__(self, ir_builder: IRBuilder, fallback_block: Block):
-        super().__init__(ir_builder)
+    def __init__(self, flow: F, fallback_block: Block):
+        self.__flow = flow
         self.__fallback_block = fallback_block
 
+    @property
+    def flow(self) -> "F":
+        return self.__flow
+
     def alternate(self):
-        self.builder.branch(self.__fallback_block)
+        self.__flow.builder.branch(self.__fallback_block)
 
     def alternate_on_bool(self, condition: IRValue) -> None:
-        ok_block = self.builder.append_basic_block("repack_ok")
-        self.builder.cbranch(condition, ok_block, self.__fallback_block)
-        self.builder.position_at_start(ok_block)
+        ok_block = self.__flow.builder.append_basic_block("repack_ok")
+        self.__flow.builder.cbranch(condition, ok_block, self.__fallback_block)
+        self.__flow.builder.position_at_start(ok_block)
 
 
 class Repacker(InvalidationTarget):
@@ -52,11 +55,11 @@ class Repacker(InvalidationTarget):
 
         pass
 
-    def generate_ir(self, flow: RepackingFlow, args: Sequence[IRValue]) -> Sequence[IRValue]:
+    def generate_ir(self, state: RepackingState, args: Sequence[IRValue]) -> Sequence[Tuple[IRValue, Set[int]]]:
         """
         Generate code to compile this repack operation
 
-        :param flow: the control flow to generate code in
+        :param state: the repacking wrapper around a control flow
         :param args: the subset of arguments the repacker will consume
         :return: the output arguments
         """
@@ -104,7 +107,7 @@ class RepackingDispatcher(Handle, Generic[T]):
         self.__dispatch = []
         self.__fallback = fallback
         self.__common = common_input
-        assert 0 <= common_input < len(fallback.function_type()[1]), "Common input is out of the handle argument range."
+        assert 0 <= common_input < len(fallback.handle_arguments()), "Common input is out of the handle argument range."
         fallback.register(self)
 
     @property
@@ -113,14 +116,19 @@ class RepackingDispatcher(Handle, Generic[T]):
 
     @fallback.setter
     def fallback(self, handle: Handle):
-        assert handle.function_type() == self.__fallback.function_type(), "Handle does not match existing signature."
+        assert handle.handle_return() == self.handle_return(), \
+            f"Handle returns {handle.handle_return()}, but {self.handle_return()} expected."
+        assert tuple(handle.handle_arguments()) == tuple(self.handle_arguments()),\
+            f"Handle expects {handle.handle_arguments()}, but {self.handle_arguments()} expected."
         self.__fallback.unregister(self)
         handle.register(self)
         self.__fallback = handle
         self.invalidate()
 
-    def _find_repack(self, input_args: Sequence[Type], output_args: Sequence[Type], hint: T)\
-            -> Union[Repacker, None]:
+    def _find_repack(self,
+                     input_args: Sequence[Tuple[Type, ArgumentManagement]],
+                     output_args: Sequence[Tuple[Type, ArgumentManagement]],
+                     hint: T) -> Optional[Repacker]:
         """
         Find a possible repacking of the arguments
 
@@ -137,27 +145,23 @@ class RepackingDispatcher(Handle, Generic[T]):
         pass
 
     def __append(self, target: Handle, hint: T) -> None:
-        (self_ret_type, self_arg_types) = self.__fallback.function_type()
-        (target_ret_type, target_arg_types) = target.function_type()
-        assert target_ret_type == self_ret_type, "Return type must match"
-        for index in range(0, self.__common):
-            self_arg_type = self_arg_types[index]
-            handle_arg_type = target_arg_types[index]
-            assert self_arg_type == handle_arg_type,\
-                f"Arguments at {index} do not match. Expected {self_arg_type} but got {handle_arg_type}."
+        self_args = self.handle_arguments()
+        target_args = target.handle_arguments()
+        assert target.handle_return() == self.handle_return(), \
+            f"Handle returns {target.handle_return()}, but {self.handle_return()} expected."
 
-        input_args = self_arg_types[self.__common:]
-        output_args = target_arg_types[self.__common:]
+        input_args = self_args[self.__common:]
+        output_args = target_args[self.__common:]
         guard = self._find_repack(input_args, output_args, hint)
         assert guard is not None, f"No repacking exists from {input_args} to {output_args}"
-        self_tail = self_arg_types[self.__common + guard.input_count():]
-        target_tail = target_arg_types[self.__common + guard.output_count():]
-        for index, (self_arg_type, handle_arg_type) in enumerate(zip(self_tail, target_tail)):
+        self_tail = self_args[self.__common + guard.input_count():]
+        target_tail = target_args[self.__common + guard.output_count():]
+        for index, (self_arg, handle_arg) in enumerate(zip(self_tail, target_tail)):
             in_idx = self.__common + guard.input_count() + index
             out_idx = self.__common + guard.output_count() + index
 
-            assert self_arg_type == handle_arg_type, \
-                f"Arguments at {in_idx} does not match {out_idx}. Expected {self_arg_type} but got {handle_arg_type}."
+            assert self_arg == handle_arg, \
+                f"Arguments at {in_idx} does not match {out_idx}. Expected {self_arg} but got {handle_arg}."
 
         self.__dispatch.append((target, guard))
         target.register(self)
@@ -205,10 +209,13 @@ class RepackingDispatcher(Handle, Generic[T]):
             self.__append(handle, hint)
         self.invalidate()
 
-    def function_type(self) -> (Type, Sequence[Type]):
-        return self.__fallback.function_type()
+    def handle_arguments(self) -> Sequence[Tuple[Type, ArgumentManagement]]:
+        return self.__fallback.handle_arguments()
 
-    def generate_ir(self, flow: F, args: Sequence[IRValue]) -> IRValue:
+    def handle_return(self) -> Tuple[Type, ReturnManagement]:
+        return self.__fallback.handle_return()
+
+    def generate_handle_ir(self, flow: F, args: Sequence[IRValue]) -> IRValue:
         output_block = flow.builder.append_basic_block()
         phi = []
         for index, (handle, guard) in enumerate(self.__dispatch):
@@ -217,24 +224,26 @@ class RepackingDispatcher(Handle, Generic[T]):
             guard_end_index = self.__common + guard.input_count()
 
             inner_args = []
-            inner_args.extend(args[0:self.__common])
+            inner_args.extend((args[i], (i,)) for i in range(0, self.__common))
             guard_args = args[self.__common:guard_end_index]
-            inner_flow = RepackingFlow(flow.builder, fallback_block)
-            inner_args.extend(guard.generate_ir(inner_flow, guard_args))
-            inner_args.extend(args[guard_end_index + 1:])
-            flow.extend_global_bindings(inner_flow.finish())
 
-            result = flow.call(handle, inner_args)
+            for val, indices in guard.generate_ir(RepackingState(flow, fallback_block), guard_args):
+                inner_args.append((val, {i + self.__common for i in indices}))
+            inner_args.extend((args[i], (i,)) for i in range(guard_end_index + 1, len(args)))
+
+            print(args, inner_args)
+            print(handle)
+            result = flow.call_and_pluck(handle, inner_args)
             flow.builder.branch(output_block)
             phi.append((flow.builder.block, result))
             flow.builder.position_at_end(fallback_block)
 
-        result = flow.call(self.__fallback, args)
+        result = flow.call_and_pluck(self.__fallback, [(a, (i,)) for i, a in enumerate(args)])
         phi.append((flow.builder.block, result))
         flow.builder.branch(output_block)
 
         flow.builder.position_at_end(output_block)
-        result = flow.builder.phi(self.__fallback.function_type()[0].machine_type(), "repack_result")
+        result = flow.builder.phi(self.__fallback.handle_return()[0].machine_type(), "repack_result")
         for (block, value) in phi:
             result.add_incoming(value, block)
         return result
