@@ -56,18 +56,33 @@ class PermuteArguments(Handle):
         return flow.call(self.__handle, call_args)
 
 
-class CopyArgument(ArgumentPermutation):
-    __index: int
-    __count: int
-    __chunk: int
+class RepeatArgument(ArgumentPermutation):
+    """
+    Creates duplicates of an argument.
 
-    def __init__(self, index: int, count: int, chunk: int = 1):
+    The argument must be borrowed.
+    """
+    __index: int
+    __repeats: int
+    __length: int
+
+    def __init__(self, index: int, repeats: int, length: int = 1):
+        """
+        Creates a repeat.
+
+        :param index: the first argument to duplicate
+        :param repeats: the number of copies to create
+        :param length: the number of arguments to copy
+        """
         self.__index = index
-        self.__count = count
-        self.__chunk = chunk
+        self.__repeats = repeats
+        self.__length = length
         assert index >= 0, "Invalid index"
-        assert count > 0, "Invalid count"
-        assert chunk > 0, "Invalid chunk size"
+        assert repeats > 0, "Invalid repeats"
+        assert length > 0, "Invalid length"
+
+    def __str__(self) -> str:
+        return f"Repeat[{self.__index}..+{self.__length} * {self.__repeats}]"
 
     def check(self, arguments: Sequence[Tuple[Type, ArgumentManagement]]) -> bool:
         for idx, (_, arg_management) in enumerate(arguments):
@@ -75,18 +90,21 @@ class CopyArgument(ArgumentPermutation):
                                       ArgumentManagement.BORROW_CAPTURE,
                                       ArgumentManagement.BORROW_CAPTURE_PARENTS),\
                 f"Copy arguments can only be used for borrowed arguments but {idx} is {arg_management}"
-        return self.__index + self.__chunk < len(arguments)
+        return self.__index + self.__length < len(arguments)
 
     def permute(self, items: Sequence[T]) -> Sequence[T]:
         output = []
         output.extend(items[0:self.__index])
         output.extend(itertools.chain.from_iterable(itertools.repeat(
-            items[self.__index: self.__index + self.__chunk], self.__count)))
+            items[self.__index: self.__index + self.__length], self.__repeats)))
         output.extend(items[self.__index:])
         return output
 
 
 class ReverseArguments(ArgumentPermutation):
+    """
+    Reverses all the arguments
+    """
 
     def check(self, arguments: Sequence[Type]) -> bool:
         return True
@@ -99,14 +117,25 @@ class ReverseArguments(ArgumentPermutation):
 
 
 class SwapArguments(ArgumentPermutation):
+    """
+    Swaps two non-overlapping blocks of arguments of the same length
+    """
     __source: int
     __destination: int
     __length: int
 
-    def __init__(self, source: int, destination: int, length: int):
+    def __init__(self, source: int, destination: int, length: int = 1):
+        """
+        Create a new swap.
+
+        :param source: the start index for swapping
+        :param destination:  the target index of swapping
+        :param length: the number of arguments to swap
+        """
         assert source >= 0
         assert destination >= 0
         assert length > 0
+        assert min(source, destination) + length < max(source, destination), "Cannot swap overlapping ranges"
         self.__source = source
         self.__destination = destination
         self.__length = length
@@ -135,12 +164,14 @@ def implode_args(handle: Handle, index: int, *preprocessors: Handle) -> Handle:
 
     This is intended to be a convenient way to unpack a structure into individual arguments.
 
-    Given a handle `t f(t0, t1, t2, t3)` and preprocessors `t1 a(x)`, `t2 b(x)`, calling `implode_args(f, 1, a, b)`,
-    will create a handle `t i(t0, x, t3)` equivalent to `i(v0, v1, v2) = f(v0, a(v1), b(v1), v2)`
+    Given a handle ``t f(t0, t1, t2, t3)`` and preprocessors ``t1 a(x)``, ``t2 b(x)``, calling
+    ``implode_args(f, 1, a, b)``, will create a handle ``t i(t0, x, t3)`` equivalent to
+    ``i(v0, v1, v2) = f(v0, a(v1), b(v1), v2)``.
+
     :param handle: the handle to transform
     :param index: the start position in the argument to handle to replace
     :param preprocessors: the number of arguments to replace with the output of the provided handles. The handles must
-    all have the same arguments
+        all have the same arguments
     :return: the preprocessed handle
     """
     if len(preprocessors) == 0:
@@ -157,4 +188,4 @@ def implode_args(handle: Handle, index: int, *preprocessors: Handle) -> Handle:
             assert prep_args == required_prep_args,\
                 f"Arguments {prep_args} for preprocessor {prep_idx} do not match previous {required_prep_args}"
         handle = PreprocessArgument(handle, index + prep_idx * len(required_prep_args), preprocessor)
-    return PermuteArguments(handle, CopyArgument(index, len(preprocessors), len(required_prep_args)))
+    return PermuteArguments(handle, RepeatArgument(index, len(preprocessors), len(required_prep_args)))

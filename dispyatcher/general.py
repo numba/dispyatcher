@@ -20,8 +20,9 @@ class MachineType(Type):
 
     def __init__(self, ty: LLType):
         """
-        Construct a new instance of a machine type given the matching LLVM type
-        :param ty:
+        Construct a new instance of a machine type given the matching LLVM type.
+
+        :param ty: the LLVM type
         """
         self.__type = ty
 
@@ -161,8 +162,8 @@ class IntegerToFloat(BaseTransferUnaryHandle[ControlFlow]):
     """
     Converts an integer type to a floating point type
 
-    The source type must have a machine type of `llvm.ir.IntType` and the target must have a machine type of
-    `llvm.ir.HalfType`, `llvm.ir.FloatType`, or `llvm.ir.DoubleType`. This handle assumes the type conversion is
+    The source type must have a machine type of ``llvm.ir.IntType`` and the target must have a machine type of
+    ``llvm.ir.HalfType``, ``llvm.ir.FloatType``, or ``llvm.ir.DoubleType``. This handle assumes the type conversion is
     acceptable for the types provided; it only cares about the machine precision.
     """
     __source: Type
@@ -185,8 +186,8 @@ class FloatResize(BaseTransferUnaryHandle[ControlFlow]):
     """
     Convert a floating-point to the correct size through extension or truncation, as appropriate.
 
-    The machine types for both of the types provided must be `llvm.ir.HalfType`, `llvm.ir.FloatType`, or
-    `llvm.ir.DoubleType`. This handle assumes the type conversion is acceptable for the types provided; it only cares
+    The machine types for both of the types provided must be ``llvm.ir.HalfType``, ``llvm.ir.FloatType``, or
+    ``llvm.ir.DoubleType``. This handle assumes the type conversion is acceptable for the types provided; it only cares
     about the machine precision.
     """
 
@@ -224,8 +225,8 @@ class FloatToInteger(BaseTransferUnaryHandle[ControlFlow]):
     """
     Converts an integer type to a floating point type
 
-    The source type must have a machine type of `llvm.ir.IntType` and the target must have a machine type of
-    `llvm.ir.HalfType`, `llvm.ir.FloatType`, or `llvm.ir.DoubleType`. This handle assumes the type conversion is
+    The source type must have a machine type of ``llvm.ir.IntType`` and the target must have a machine type of
+    ``llvm.ir.HalfType``, ``llvm.ir.FloatType``, or ``llvm.ir.DoubleType``. This handle assumes the type conversion is
     acceptable for the types provided; it only cares about the machine precision.
     """
     __source: Type
@@ -335,7 +336,6 @@ class BaseExistingFunction(Handle):
     def _name(self) -> str:
         """
         Gets the user-friendly name of the function as it should appear for debugging
-        :return:
         """
         raise NotImplementedError()
 
@@ -346,7 +346,8 @@ class BaseExistingFunction(Handle):
         """
         Gets an LLVM value for a function (e.g., a global function constant, or function pointer)
 
-        This should not generate the function call; it needs only provide the function itself
+        This should not generate the function call; it needs only provide the function itself.
+
         :param flow: the control flow in which the function will be called
         :param return_type: the LLVM type of the function's return
         :param argument_types: the LLVM types of the function's arguments
@@ -372,7 +373,8 @@ class BaseIndirectFunction(BaseExistingFunction):
 
     def _address(self) -> ctypes.c_char_p:
         """
-        The current address of the function
+        The current address of the function.
+
         :return: the address
         """
         raise NotImplementedError()

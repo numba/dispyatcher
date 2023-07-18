@@ -41,6 +41,7 @@ class Repacker(InvalidationTarget):
         A repacker can choose to consume some input, but does not necessarily have to consume it all.
 
         Any excess arguments will be matched exactly with any remaining arguments in the output.
+
         :return: the number of arguments the repacker intends to consume
         """
         pass
@@ -50,6 +51,7 @@ class Repacker(InvalidationTarget):
         A repacker can choose to provide some input, but does not necessarily have to provide it all.
 
         Any excess arguments will be matched exactly with any remaining arguments in the input.
+
         :return: the number of arguments the repacker intends to provide
         """
 
@@ -79,13 +81,15 @@ class RepackingDispatcher(Handle, Generic[T]):
     The dispatcher is initialised with a fallback handle. Additional paths maybe be provided and the dispatcher, which
     must be subclassed, can provide a repacker that allows transforming input arguments to output arguments. For
     example, suppose we have a Python tuple and we have multiple specialisations for summing the tuple, we might write:
-    ```
-    throw_exception_fallback = ...
-    dispatcher = TupleUnpackingDispatcher(DropArguments(throw_exception, 0, py_obj), 0)
-    dispatcher.append(IdentityHandle(i32), 1)
-    dispatcher.append(SumInteger(i32), 2)
-    ```
-    Our `TupleUnpackingDispatcher` will generate repacking from a `PyObject*` to `i32` and to `i32, i32`.
+
+    .. code-block::
+
+        throw_exception_fallback = AlwaysThrow(py_obj, ReturnManagement.TRANSFER, error="Yeah. Nope")
+        dispatcher = TupleUnpackingDispatcher(IgnoreArguments(throw_exception, 0, py_obj), 0)
+        dispatcher.append(IdentityHandle(i32), 1)
+        dispatcher.append(SumInteger(i32), 2)
+
+    Our ``TupleUnpackingDispatcher`` will generate repacking from a ``PyObject*`` to ``i32`` and to ``i32, i32``.
 
     The dispatcher allows some arguments at the beginning to be the same and passed without modification. Then, the
     dispatcher can choose how many of the remaining arguments it would like to repack. Any unclaimed arguments must
@@ -98,7 +102,8 @@ class RepackingDispatcher(Handle, Generic[T]):
 
     def __init__(self, fallback: Handle, common_input: int):
         """
-        Construct a new repacking dispatcher. This class must be subclassed to provide the `_find_repack` method.
+        Construct a new repacking dispatcher. This class must be subclassed to provide the ``_find_repack`` method.
+
         :param fallback: the handle to call if no input cases match. This handle defines what other handles can consider
         as input arguments
         :param common_input: the number of arguments at the beginning that are not eligible for repacking.
@@ -132,7 +137,7 @@ class RepackingDispatcher(Handle, Generic[T]):
         """
         Find a possible repacking of the arguments
 
-        Subclasses must implement this method to provide whatever logic they can use to transform input arguemtents to
+        Subclasses must implement this method to provide whatever logic they can use to transform input arguments to
         output arguments.
 
         :param input_args: the arguments from the input excluding the common prefix. The number of these consumed will
@@ -140,7 +145,7 @@ class RepackingDispatcher(Handle, Generic[T]):
         :param output_args: the arguments from the output excluding the common prefix. The number of these provided will
         be indicated by the repacker. These are a subset of the input arguments of the handle being added.
         :param hint: way to pass implementation-specific information into the repacker
-        :return: if a repacker was found, the repacker to use or `None` if there is no valid repacking
+        :return: if a repacker was found, the repacker to use or ``None`` if there is no valid repacking
         """
         pass
 
@@ -174,8 +179,9 @@ class RepackingDispatcher(Handle, Generic[T]):
         The handle's common prefix will be checked, then a repacker will be selected, passing the hint along, and, if
         successful, any remaining arguments will be checked as a common suffix.
 
-        This triggers a recompile of any call sites using this handle, so use `extend` or `replace` for doing bulk
+        This triggers a recompile of any call sites using this handle, so use ``extend`` or ``replace`` for doing bulk
         changes.
+
         :param target: the handle to add
         :param hint: additional information for the dispatch process
         """
@@ -192,7 +198,7 @@ class RepackingDispatcher(Handle, Generic[T]):
         """
         Removes all handles in the dispatch except the fallback handle
 
-        This triggers a recompile of any call sites using this handle, so use `replace` for doing bulk changes.
+        This triggers a recompile of any call sites using this handle, so use ``replace`` for doing bulk changes.
         """
         self.__clear()
         self.invalidate()
@@ -201,8 +207,9 @@ class RepackingDispatcher(Handle, Generic[T]):
         """
         Install all the handle/hints provided
 
-        See `append` for details about how the handles and hints are interpreted. This will trigger recompilation of any
-        call sites using this handle after _all_ handles have be installed.
+        See ``append`` for details about how the handles and hints are interpreted. This will trigger recompilation of
+        any call sites using this handle after *all* handles have be installed.
+
         :param collection: the new key/handle pairs to install
         """
         for (handle, hint) in collection:
@@ -231,8 +238,6 @@ class RepackingDispatcher(Handle, Generic[T]):
                 inner_args.append((val, {i + self.__common for i in indices}))
             inner_args.extend((args[i], (i,)) for i in range(guard_end_index + 1, len(args)))
 
-            print(args, inner_args)
-            print(handle)
             result = flow.call_and_pluck(handle, inner_args)
             flow.builder.branch(output_block)
             phi.append((flow.builder.block, result))
@@ -252,8 +257,9 @@ class RepackingDispatcher(Handle, Generic[T]):
         """
         Remove any handles present and repopulate the dispatcher with the collection provided.
 
-        This has the same effect as calling `clear` followed by `extend`, but will ony trigger one recompilation, so it
-        is preferred for bulk operations.
+        This has the same effect as calling ``clear`` followed by ``extend``, but will ony trigger one recompilation, so
+        it is preferred for bulk operations.
+
         :param collection: the new handle/hint pairs to install
         """
         self.__clear()

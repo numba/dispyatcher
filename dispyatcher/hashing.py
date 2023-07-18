@@ -10,24 +10,25 @@ class HashValueGuard:
     """
     A hash guard generates code to allow dispatching values based using hash and a table lookup.
 
-    The `HasValueDispatcher` effectively writes a hash table into the generated code and the guard allows computing the
-    key for an arbitrary value. Like a hash table implementation, it needs to be able to compute the hash and equality
-    of a key, but, as a twist, it needs to be able to do that at compile time and emit code that does the same hashing
-    at runtime.
+    The ``HasValueDispatcher`` effectively writes a hash table into the generated code and the guard allows computing
+    the key for an arbitrary value. Like a hash table implementation, it needs to be able to compute the hash and
+    equality of a key, but, as a twist, it needs to be able to do that at compile time and emit code that does the same
+    hashing at runtime.
 
-    Since the Python `hash` function is unstable, it shouldn't be used in any way.
+    Since the Python ``hash`` function is unstable, it shouldn't be used in any way.
 
     Note that the runtime and compile time versions of this function receive separate values and the guard must figure
-    out how to handle that sensibly. For instance, if hashing a string, the Python type might be `str` and the runtime
-    type might be a C string as `char*` (`i8*` in LLVM), but it could just as easily be a Python `str` with a runtime
-    value of a Rust `&str` (`type{i8*, u64}` in LLVM on a 64-bit system). In fact, the compile-time and runtime values
-    can be totally decoupled. Perhaps the Python compile-time side only handles CRC32 values of strings while the
-    runtime handles byte arrays.
+    out how to handle that sensibly. For instance, if hashing a string, the Python type might be ``str`` and the runtime
+    type might be a C string as ``char*`` (``i8*`` in LLVM), but it could just as easily be a Python ``str`` with a
+    runtime value of a Rust ``&str`` (``type{i8*, u64}`` in LLVM on a 64-bit system). In fact, the compile-time and
+    runtime values can be totally decoupled. Perhaps the Python compile-time side only handles CRC32 values of strings
+    while the runtime handles byte arrays.
     """
 
     def compatible(self, ty: Type) -> bool:
         """
         Checks if a particular type can be handled by this guard.
+
         :param ty: the type of the input data
         :return: true if the guard can process values of this type
         """
@@ -37,18 +38,19 @@ class HashValueGuard:
         """
         Compute the hash of a particular value.
 
-        This output must match the output of the runtime version emitted by `generate_hash_ir`.
+        This output must match the output of the runtime version emitted by ``generate_hash_ir``.
+
         :param value: the value to be hashed, as a Python value
-        :return:
         """
         pass
 
     def generate_hash_ir(self, builder: IRBuilder, arg: IRValue) -> IRValue:
         """
         Generate code to produce the hash of a value.
+
         :param builder: the LLVM builder
         :param arg: the value which should be hashed
-        :return: the result of the hash, which must be an `i32`
+        :return: the result of the hash, which must be an ``i32``
         """
         pass
 
@@ -60,11 +62,12 @@ class HashValueGuard:
 
         The guard is responsible for creating a correct encoding of the value in the generated code.
 
-        The guard should do the comparison and
+        The guard should do the equality comparison and provide the result.
+
         :param value: the value to be checked, as a Python value (the right-hand side of the comparison)
         :param builder: the LLVM builder
         :param arg: the runtime-value to be compared (the left-handle side of the comparison)
-        :return: the result of the comparison (true if they are equal) as an `i1`
+        :return: the result of the comparison (true if they are equal) as an ``i1``
         """
         pass
 
@@ -78,7 +81,7 @@ class HashValueDispatcher(Handle):
 
     Not all inputs need to be considered as part of the selection process. Each input may have a separate guard that
     selects how hashing of that input is to work. If an input should not be considered as part of the selection process
-    (e.g., it is an output buffer), it can have `None` as a guard to be excluded.
+    (*e.g.*, it is an output buffer), it can have ``None`` as a guard to be excluded.
 
     At least one input must have a guard.
     """
@@ -88,11 +91,12 @@ class HashValueDispatcher(Handle):
 
     def __init__(self, fallback: Handle, *guards: Optional[HashValueGuard]):
         """
-        Construct a new hash-dispatching handle
+        Construct a new hash-dispatching handle.
+
         :param fallback: the handle to execute if none of the special cases match; all other handles must match the type
-        of this handle
+            of this handle
         :param guards: the guards to use; the number of guards (or `None`) must equal the number of parameters in the
-        fallback handle
+            fallback handle
         """
         super().__init__()
         self.__dispatch = {}
@@ -142,14 +146,15 @@ class HashValueDispatcher(Handle):
         """
         Adds a single new handle to the collection for this handle.
 
-        This triggers a recompile of any call sites using this handle, so use `extend` or `replace` for doing bulk
+        This triggers a recompile of any call sites using this handle, so use ``extend`` or ``replace`` for doing bulk
         changes.
-        :param key: a sequence of values to be fed into the guards for this handle. Any guards which are `None` should
-        have a corresponding `None` in the key set. Values are read both at the time of addition and at recompilation,
-        which can happen at any time; therefore, values must be immutable or effectively immutable as read by the
-        guards.
+
+        :param key: a sequence of values to be fed into the guards for this handle. Any guards which are ``None`` should
+            have a corresponding ``None`` in the key set. Values are read both at the time of addition and at
+            recompilation, which can happen at any time; therefore, values must be immutable or effectively immutable as
+            read by the guards.
         :param target: the handle to call when the arguments match the key. This handle must have the same signature as
-        the fallback handle
+            the fallback handle
         """
         self.__insert_one(key, target)
         self.invalidate()
@@ -164,7 +169,7 @@ class HashValueDispatcher(Handle):
         """
         Remove all installed handles and use only the fallback handle
 
-        This triggers a recompile of any call sites using this handle, so use `extend` or `replace` for doing bulk
+        This triggers a recompile of any call sites using this handle, so use ``extend`` or ``replace`` for doing bulk
         changes.
         """
         self.__clear()
@@ -174,8 +179,9 @@ class HashValueDispatcher(Handle):
         """
         Install all the key/handles provided
 
-        See `insert` for details about how the key and handles are interpreted. This will trigger recompilation of any
-        call sites using this handle after _all_ handles have be installed.
+        See ``insert`` for details about how the key and handles are interpreted. This will trigger recompilation of any
+        call sites using this handle after *all* handles have be installed.
+
         :param collection: the new key/handle pairs to install
         """
         for key, target in collection:
@@ -234,8 +240,9 @@ class HashValueDispatcher(Handle):
         """
         Remove any handles present and repopulate the dispatcher with the collection provided.
 
-        This has the same effect as calling `clear` followed by `extend`, but will ony trigger one recompilation, so it
-        is preferred for bulk operations.
+        This has the same effect as calling ``clear`` followed by ``extend``, but will ony trigger one recompilation, so
+        it is preferred for bulk operations.
+
         :param collection: the new key/handle pairs to install
         """
         self.__clear()

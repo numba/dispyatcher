@@ -30,7 +30,8 @@ class PythonControlFlow(dispyatcher.ControlFlow):
     def check_return_code(self, result: IRValue, ok_value: int, error: str, message: str) -> None:
         """
         Many CPython functions return an integer for a true/false/exception case. This is a helper to build the flow
-        logic for these functions
+        logic for these functions.
+
         :param result: the result returned by the function
         :param ok_value: the return value that signals the happy path
         :param error: the exception name when the function is on the unhappy non-exception path
@@ -51,8 +52,9 @@ class PythonControlFlow(dispyatcher.ControlFlow):
 
     def throw_exception(self, error: str, message: str) -> None:
         """
-        Throw an exception and stop the current control flow
-        :param error: the name of the exception (only the built-in exceptions such as `ValueError`)
+        Throw an exception and stop the current control flow.
+
+        :param error: the name of the exception (only the built-in exceptions such as ``ValueError``)
         :param message: the message to put into the exception
         """
         set_string = self.use_native_function("PyErr_SetString",
@@ -105,7 +107,7 @@ class PythonControlFlowType(dispyatcher.ControlFlowType):
 
 class PyObjectType(Type):
     """
-    The type of a Python object, using the `PyObject*` at the machine level, that also knows a Python type and can
+    The type of a Python object, using the ``PyObject*`` at the machine level, that also knows a Python type and can
     insert appropriate type checks during handle conversions.
     """
     __type: type
@@ -172,9 +174,52 @@ PY_DICT_TYPE = PyObjectType(dict)
 """ The type for a Python dictionary """
 
 
+class AlwaysThrow(Handle[PythonControlFlow]):
+    """
+    A handle that always throws an exception.
+    """
+    error: str
+    exception: str
+    __ty: Type
+    __transfer: ReturnManagement
+
+    def __init__(self,
+                 ty: Type,
+                 transfer: ReturnManagement = ReturnManagement.TRANSFER,
+                 exception: str = "ValueError",
+                 error: str = "Value cannot be null"):
+        """
+        Create a new handle which checks if the argument is not null and raises an exception if it is null.
+
+        :param ty: the type that will be returned; although this handle will never return, it still needs a type
+        :param transfer: whether the return value is transferred; although this will never return, it still needs a
+            management
+        :param exception: the exception type to throw
+        :param error: the error message to raise
+        """
+        super().__init__()
+        self.exception = exception
+        self.error = error
+        self.__ty = ty
+        self.__transfer = transfer
+
+    def __str__(self) -> str:
+        return f"AlwaysThrow[{self.__transfer.name}, {self.exception}({repr(self.exception)}) → {self.__ty}"
+
+    def generate_handle_ir(self, flow: F, args: Sequence[IRValue]) -> IRValue:
+        flow.throw_exception(self.exception, self.error)
+        return self.__ty.machine_type()(None)
+
+    def handle_arguments(self) -> Sequence[Tuple[Type, ArgumentManagement]]:
+        return ()
+
+    def handle_return(self) -> Tuple[Type, ReturnManagement]:
+        return self.__ty, self.__transfer
+
+
 class CFunctionHandle(BaseIndirectFunction):
     """
-    Wraps a `ctypes` generated function in a handle
+    Wraps a ``ctypes`` generated function in a handle
     """
 
     def __init__(self,
@@ -186,10 +231,9 @@ class CFunctionHandle(BaseIndirectFunction):
         Creates a new wrapper around a ctype function.
 
         There is not necessarily enough information in ctypes to accurate check that the function is being called with
-        the correct argument types. This is some very C unsafe behaviour. If the argument types are filled out in the
-        ctypes function, which they are often not, this will attempt to validate them against arguments provided. If
-        no arguments are known in the ctypes function, YOLO.
-        :param ret: the return type of this function; since this must be filled out, this will always be checked
+        the correct argument types. This is some very C unsafe behaviour. YOLO.
+
+        :param ret: the return type of this function
         :param cfunc: the ctypes function to call
         :param args: the parameters types to the function
         """
@@ -215,6 +259,7 @@ class ThrowIfNull(BaseTransferUnaryHandle[PythonControlFlow]):
                  error: str = "Value cannot be null"):
         """
         Create a new handle which checks if the argument is not null and raises an exception if it is null.
+
         :param ty: the type, which must have an LLVM type that is a pointer
         :param error: the error message to raise
         """
@@ -241,12 +286,13 @@ class CheckedCast(BaseTransferUnaryHandle[PythonControlFlow]):
     """
     Check a Python type is an instance of a class provided
 
-    This is meant to be a type assertion. It's named for the JVM `CHECKEDCAST` instruction, which Python doesn't have.
+    This is meant to be a type assertion. It's named for the JVM ``CHECKEDCAST`` instruction, which Python doesn't have.
     """
 
     def __init__(self, arg: type, ret: type, transfer: ReturnManagement = ReturnManagement.BORROW):
         """
-        Create a new check handle
+        Create a new check handle.
+
         :param arg: the argument type as a Python type (not a dispyatcher or LLVM type)
         :param ret: the return type as a Python type (not a dispyatcher or LLVM type)
         """
@@ -320,7 +366,7 @@ class TupleArguments(NamedTuple):
     """
     The LLVM IR values needed to unpack a tuple
 
-    Some arguments must be pre-allocated and passed to the `PyArg_ParseTuple` function and some must be passed to the
+    Some arguments must be pre-allocated and passed to the ``PyArg_ParseTuple`` function and some must be passed to the
     handle that will consume the results, if successful.
     """
     unpack_args: Sequence[llvmlite.ir.Value]
@@ -328,7 +374,7 @@ class TupleArguments(NamedTuple):
 
 
 class TupleElement:
-    """ A representation of a possible type inside a tuple that `PyArg_ParseTuple` can use"""
+    """ A representation of a possible type inside a tuple that ``PyArg_ParseTuple`` can use"""
 
     def format_code(self) -> str:
         """The code that directs the `packing/unpacking of a tuple
@@ -337,7 +383,8 @@ class TupleElement:
 
     def pack(self) -> int:
         """
-        The number of input arguments that will be consumed when packing
+        The number of input arguments that will be consumed when packing.
+
         :return: the argument count
         """
         pass
@@ -348,10 +395,11 @@ class TupleElement:
 
         This creates allocations for the arguments to a tuple unpacking and a callback that allows generating loading
         those arguments. As a general rule, tuple unpacking requires a pointer to a storage location (one that will
-        likely be generated by `alloca` and then loading that location so it can be used in the target handle. This
-        function creates an instructions for the `alloca` instructions and then provides a callback to load them when
-        required, in the same builder. Some single tuple elements translate to multiple real arguments (_e.g._, data +
-        length for buffers) and a tuple element represents on logical element even if it requires multiple arguments
+        likely be generated by ``alloca`` and then loading that location so it can be used in the target handle. This
+        function creates an instructions for the ``alloca`` instructions and then provides a callback to load them when
+        required, in the same builder. Some single tuple elements translate to multiple real arguments (*e.g.*, data +
+        length for buffers) and a tuple element represents on logical element even if it requires multiple arguments.
+
         :param builder:  the LLVM IR builder in which to generate code
         :return: the argument information required
         """
@@ -360,14 +408,15 @@ class TupleElement:
 
 class SimpleTupleElement(TupleElement):
     """
-    A naive tuple element that has a 1:1 correspondence between element and argument and can be created by an `alloc`.
+    A naive tuple element that has a 1:1 correspondence between element and argument and can be created by an ``alloc``.
     """
     __format: str
     __type: llvmlite.ir.Type
 
     def __init__(self, format_code: str, ty: llvmlite.ir.Type):
         """
-        Create a new naive tuple element
+        Create a new naive tuple element.
+
         :param format_code: the Python format code to use
         :param ty: the type of the element; the machine type must match the format code, but it will not be checked
         """
@@ -392,9 +441,10 @@ class TupleUnpackingDispatcher(RepackingDispatcher[None]):
     """
     def __init__(self, fallback: Handle, tuple_index: int):
         """
-        Construct a new handle
+        Construct a new handle.
+
         :param fallback: the handle to use if the input does not match
-        :param tuple_index: the index in the fallback argument list where the tuple, as a `PY_OBJECT_TYPE`, will occur
+        :param tuple_index: the index in the fallback argument list where the tuple, as a ``PY_OBJECT_TYPE``, will occur
         """
         super().__init__(fallback, tuple_index)
         assert isinstance(fallback.handle_arguments()[tuple_index][0], PyObjectType),\
@@ -556,10 +606,11 @@ def find_unpack(ty: Type) -> TupleElement:
     """
     Attempts to find a tuple element that matches an arbitrary type
 
-    If the type implements `TupleElement`, then it will be used as itself. Otherwise, if the type has a numeric machine
+    If the type implements ``TupleElement``, then it will be used as itself. Otherwise, if the type has a numeric machine
     type, an appropriate tuple element based on that machine type will be used.
+
     :param ty: the type to find a matching tuple element representation of
-    :return: the best match, if found, otherwise, a `ValueError` will be raised.
+    :return: the best match, if found, otherwise, a ``ValueError`` will be raised.
     """
     if isinstance(ty, TupleElement):
         return ty

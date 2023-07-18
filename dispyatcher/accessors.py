@@ -10,7 +10,8 @@ class GetMember(Type):
 
     def member_target(self, member: int) -> Type:
         """
-        Get the type of a member by index
+        Get the type of a member by index.
+
         :param member: the member index
         :return: the type of that member
         """
@@ -21,11 +22,11 @@ class GetPointer(Type):
     """
     Allows accessing array-like structures
 
-    This allows creation of handles that use LLVM's `get-element-pointer` to index into a structure and know the type
-    of the element in that structure. In C-terms, it answers `typeof &x[0]`. This might seem redundant since, for C
+    This allows creation of handles that use LLVM's ``get-element-pointer`` to index into a structure and know the type
+    of the element in that structure. In C-terms, it answers ``typeof &x[0]``. This might seem redundant since, for C
     arrays, this will always be the original type. However, it may be desirable to create an opaque array where the type
-    of the elements is different from the type of the array. A reason to do this is to avoid making `&(&x[1])[1]`
-    possible. This can also be implemented separately from deref, so `&x[0]` is possible, but `*x` is not.
+    of the elements is different from the type of the array. A reason to do this is to avoid making ``&(&x[1])[1]``
+    possible. This can also be implemented separately from deref, so ``&x[0]`` is possible, but ``*x`` is not.
 
     This may or may not be applicable to every situation, but it designed to allow creating more sophisticated type
     checking using handles than LLVM or C would allow.
@@ -33,7 +34,8 @@ class GetPointer(Type):
 
     def target_pointer(self) -> Type:
         """
-        Gets the type of an element in an array-like structure
+        Gets the type of an element in an array-like structure.
+
         :return: the element type
         """
         pass
@@ -43,7 +45,7 @@ class ArrayElementPointer(Handle[ControlFlow]):
     """
     A handle that takes an array and an index access the element at the provided index.
 
-    Unlike `GetElementPointer`, this operates on a dynamic index. No bounds checking is provided.
+    Unlike ``GetElementPointer``, this operates on a dynamic index. No bounds checking is provided.
     """
     __container_type: Type
     __index_type: Type
@@ -51,11 +53,12 @@ class ArrayElementPointer(Handle[ControlFlow]):
 
     def __init__(self, container_type: Type, index_type: Type, element_type: Optional[Type] = None):
         """
-        Creates a new array lookup handle
+        Creates a new array lookup handle.
+
         :param container_type: the type of the array; it must be an LLVM array or pointer type
         :param index_type: the type of the index, which must have an LLVM type that is a 32-bit or 64-bit integer
         :param element_type: the type of the element being pointed to; if none, the container type must implement
-        `GetPointer`
+            ``GetPointer``
         """
         super().__init__()
         self.__container_type = container_type
@@ -94,7 +97,7 @@ class GetElementPointer(Handle):
     """
     Get the address of the element in a heterogenous or homogenous container type
 
-    This is the equivalent of C's `&x->foo` or `&x[3]`.
+    This is the equivalent of C's ``&x->foo`` or ``&x[3]``.
     """
     __index: int
     __container_type: Type
@@ -102,7 +105,8 @@ class GetElementPointer(Handle):
 
     def __init__(self, container_type: Type, index: int, field_ty: Optional[Type] = None):
         """
-        Create a handle that can access the contents of a container type
+        Create a handle that can access the contents of a container type.
+
         :param container_type: the type of the container, which must have an LLVM type of struct, pointer, or array
         :param index: the element to access
         :param field_ty: the type of the element being referenced. If none, the container type needs to implement

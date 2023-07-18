@@ -10,11 +10,11 @@ from typing import Sequence, List, Dict, TypeVar, Generic, Tuple, Set, Optional,
 
 def llvm_type_to_ctype(ty: LLType):
     """
-    Find a ctype representation from an LLVM type
+    Find a ``ctype`` representation from an LLVM type
 
     This function finds the appropriate ctype for an LLVM type, if one exists. The ctype representation may lose
     information about the LLVM type, especially where structures are concerned. Some LLVM types do not have equivalent
-    ctype representations including half-precision floats (aka `float16`), vectors, metadata types, and label types.
+    ctype representations including half-precision floats (aka ``float16``), vectors, metadata types, and label types.
 
     If conversion fails, an exception is raised.
 
@@ -55,9 +55,10 @@ def llvm_type_to_ctype(ty: LLType):
 
 def is_llvm_floating_point(ty: llvmlite.ir.Type) -> bool:
     """
-    Checks if the LLVM type provided is a floating point type
+    Checks if the LLVM type provided is a floating point type.
+
     :param ty: the LLVM type to check
-    :return: true if an instance of `llvm.ir.HalfType`, `llvm.ir.FloatType`, or `llvm.ir.DoubleType`
+    :return: true if an instance of ``llvm.ir.HalfType``, ``llvm.ir.FloatType``, or ``llvm.ir.DoubleType``
     """
     return (isinstance(ty, llvmlite.ir.HalfType) or isinstance(ty, llvmlite.ir.FloatType) or
             isinstance(ty, llvmlite.ir.DoubleType))
@@ -71,11 +72,11 @@ class Type:
         """
         Convert from self type into the target type provided.
 
-        If a conversion is known, this function should return a handle with a signature that has a single parameter of
+        If a conversion is known, this function should return a target with a signature that has a single parameter of
         its own type and a return type of the target provided. If no suitable conversion exists, the method should
-        return `None`.
+        return ``None``.
 
-        This method operates in conjunction with `from_type` to allow either the source or destination type to provide
+        This method operates in conjunction with ``from_type`` to allow either the source or destination type to provide
         a conversion, with the source type having priority.
         """
         return None
@@ -84,11 +85,11 @@ class Type:
         """
         Convert from the provided type into the self type.
 
-        If a conversion is known, this function should return a handle with a signature that has a single parameter of
+        If a conversion is known, this function should return a target with a signature that has a single parameter of
         the source type provided and a return its own type. If no suitable conversion exists, the method should return
-        `None`.
+        ``None``.
 
-        This method operates in conjunction with `into_type` to allow either the source or destination type to provide
+        This method operates in conjunction with ``into_type`` to allow either the source or destination type to provide
         a conversion, with the source type having priority.
         """
         return None
@@ -98,15 +99,16 @@ class Type:
         Creates a copy of a value of this type and returns the copy.
 
         "Copy" is a type-specific idea. Since some handles will require an "owned" value and making a "copy" is meant to
-        satisfy that requirement. For some types, a copy might just be the value; _e.g._, a copy of an integer is just
-        the original value. Similarly, pointers to constant values (_e.g._, function pointers, string literals), can
+        satisfy that requirement. For some types, a copy might just be the value; *e.g.*, a copy of an integer is just
+        the original value. Similarly, pointers to constant values (*e.g.*, function pointers, string literals), can
         also be copied by using the original value. For Python objects or other reference counted objects, the copy
-        operation can simply adjust the reference count and return the same value, while tracking objects, _e.g._, C++'s
-        `std::shared_ptr<>`, may return a different value. It's also worth noting that the underlying type does not
+        operation can simply adjust the reference count and return the same value, while tracking objects, *e.g.*, C++'s
+        ``std::shared_ptr<>``, may return a different value. It's also worth noting that the underlying type does not
         determine the behaviour of cloning. For instance, it would be possible to create a type for a file descriptor,
         which is represented as an integer, but still requires a copy to create an independently closable descriptor.
 
         If the value cannot be copied, this should throw an exception.
+
         :param flow: the control flow in which to generate the copy code
         :param value: the value to copy
         :return: the copied value
@@ -130,8 +132,8 @@ class Type:
         """
         Provide the ctype representation of this type
 
-        If no ctype representation exists, it should raise a type error. The default method for this method will return
-        the ctype representation of the machine/LLVM type. It is provided in the case where a better ctype
+        If no ``ctype`` representation exists, it should raise a type error. The default method for this method will
+        return the ``ctype`` representation of the machine/LLVM type. It is provided in the case where a better ctype
         representation is available.
         """
         return llvm_type_to_ctype(self.machine_type())
@@ -143,11 +145,12 @@ class Type:
         Calls the destructor on a value, if necessary. It is assumed that a destructor will be called for any owned
         values that are not returned.
 
-        Many values will be trivially destroyable (_e.g._, numeric values, function pointers), in which case this method
+        Many values will be trivially destroyable (*e.g.*, numeric values, function pointers), in which case this method
         should simply generate no codes.
 
-        It is also possible to have a value which should never be destroyed (_i.e._, a monad), in which case, this
+        It is also possible to have a value which should never be destroyed (*i.e.*, a monad), in which case, this
         method can throw an exception.
+
         :param flow: the control flow in which to generate the destruction code
         :param value: the value to destroy
         """
@@ -169,7 +172,8 @@ class Type:
 
     def as_pointer(self) -> "Type":
         """
-        Creates a new type that is a simple pointer to this type
+        Creates a new type that is a simple pointer to this type.
+
         :return: the new type
         """
         return Pointer(self)
@@ -182,6 +186,7 @@ class Deref(Type):
     def target(self) -> Type:
         """
         The type "inside" this type.
+
         :return: the inner type
         """
         raise NotImplementedError()
@@ -191,7 +196,7 @@ class Pointer(Deref):
     """
     A type for a simple pointer
 
-    This, at the machine level, looks like a C++ `&` reference or a Rust reference. Unlike a C `*` pointer, no
+    This, at the machine level, looks like a C++ ``&`` reference or a Rust reference. Unlike a C ``*`` pointer, no
     arithmetic can be performed on it.
     """
     __inner: Type
@@ -237,8 +242,9 @@ This determines how memory and lifetime management will work for an argument. Th
 and the lifetime model.
 
 The first part determines memory management:
-BORROW: the caller is responsible for freeing this value when it is not in use
-TRANSFER: the callee is responsible for freeing this value
+
+* ``BORROW``: the caller is responsible for freeing this value when it is not in use
+* ``TRANSFER``: the callee is responsible for freeing this value
 
 Normally arguments are assumed to be borrowed for the lifetime of the function, and they can be destroyed after the
 function is called. However, some functions take ownership of the argument and the caller should not destroy the
@@ -251,26 +257,26 @@ management will be no-ops.
 
 The second part determines the lifetime management. For any given handle the result may be tied to the input arguments.
 That is to say that it might be valid only if the input value has not been destroyed. This might be because the value
-references an internal part of the other structure (_e.g._, it is a pointer to an element of a collection, or a chunk of
+references an internal part of the other structure (*e.g.*, it is a pointer to an element of a collection, or a chunk of
 an arena or an iterator over a collection).
 
 A handle can make the distinction between capturing the lifetime of an argument vs capturing the same lifetimes as that
 argument.
 
-TRANSIENT: the function may read the value, but the output does not depend on this value
-CAPTURE: the function will produce output that depends on the lifetime of this argument (_i.e._, the result must be
-freed before this argument is freed)
-CAPTURE_PARENTS: the function will produce output that depends on the lifetimes of the lifetimes already captured by
-this value, but not the value itself (consider a situation like an iterator; this indicates the function depends on the
-collection, but not the iterator itself)
+* ``TRANSIENT``: the function may read the value, but the output does not depend on this value
+* ``CAPTURE``: the function will produce output that depends on the lifetime of this argument (*i.e.*, the result must
+    be freed before this argument is freed)
+* ``CAPTURE_PARENTS``: the function will produce output that depends on the lifetimes of the lifetimes already captured
+    by this value, but not the value itself (consider a situation like an iterator; this indicates the function depends
+    on the collection, but not the iterator itself)
 
 For example, suppose you take an iterator over a collection as an argument and capture a value from the iterator. The
 resulting data does not require the iterator to continue existing upon returning. However, it does require the
-collection the iterator was borne from continue to exist. This is the distinction made been a `CAPTURE` and
-`CAPTURE_PARENTS`.
+collection the iterator was borne from continue to exist. This is the distinction made been a ``CAPTURE`` and
+``CAPTURE_PARENTS``.
 
-Note that `TRANSFER_CAPTURE` is an impossible condition as it means the callee is going to free a value, but the output
-is dependent on it.
+Note that ``TRANSFER_CAPTURE`` is an impossible condition as it means the callee is going to free a value, but the
+output is dependent on it.
 """
 
 
@@ -278,8 +284,8 @@ ReturnManagement = enum.Enum('ReturnManagement', ['BORROW', 'TRANSFER'])
 """
 This determines how memory management will work for a return value:
 
-BORROW: the callee is responsible for freeing this value when it is not in use
-TRANSFER: the caller is responsible for freeing this value
+* ``BORROW``: the callee is responsible for freeing this value when it is not in use
+* ``TRANSFER``: the caller is responsible for freeing this value
 
 For instance, if the value is an element of a collection, it shouldn't invoke a destructor directly; the value can be
 discarded without calling an explicit destructor. This is not true for an iterator that would require freeing the memory
@@ -327,13 +333,15 @@ class FlowState:
     def add_library_dependency(self, name: str) -> None:
         """
         Adds an OrcJIT dependency to the callsite.
+
         :param name: the name of the library
         """
         self.__library_dependencies.add(name)
 
-    def check_read(self, lifetime) -> None:
+    def check_read(self, lifetime: int) -> None:
         """
-        Assert tha that a lifetime is still valid
+        Assert tha that a lifetime is still valid.
+
         :param lifetime: the identifier of the lifetime
         """
         assert lifetime in self.__dependencies, "Trying to read lifetime that has been transferred or dropped"
@@ -341,11 +349,12 @@ class FlowState:
     def create_lifetime(self, value: IRValue, parents: Sequence[Tuple[int, bool]], ty: Optional[Type]) -> int:
         """
         Tracks a new lifetime.
+
         :param value: the LLVM value that needs to be tracked
         :param parents: the other lifetimes to connect to this lifetime; each is an argument index and a Boolean value
-        indicating whether to include this value (False) or the lifetimes of its ancestors (True)
+            indicating whether to include this value (``False``) or the lifetimes of its ancestors (``True``)
         :param ty: the type of the value, if it needs to be freed explicitly. If does not, None should be provided and
-        the drop operation will be a no-op (though dependant values may still get explicit drop operations)
+            the drop operation will be a no-op (though dependant values may still get explicit drop operations)
         :return: an integer which is the state-specific lifetime identifier
         """
         lifetime = self.__next_lifetime
@@ -361,11 +370,12 @@ class FlowState:
         self.__dependencies[lifetime] = (lifetimes, value, ty)
         return lifetime
 
-    def drop(self, lifetime) -> None:
+    def drop(self, lifetime: int) -> None:
         """
         Explicitly drop a lifetime and any dependant values.
 
-        This will run all appropriate destructors
+        This will run all appropriate destructors.
+
         :param lifetime: the state-specific lifetime identifier
         """
         (_, value, ty) = self.__dependencies[lifetime]
@@ -391,8 +401,8 @@ class FlowState:
         This will trigger cleanup of all temporary values in the block. If a return lifetime is provided, that value
         will be spared from the cleanup and it will be checked that it does not depend on any temporary values that are
         being cleaned.
+
         :param return_lifetime: an optional return lifetime to track
-        :return:
         """
         spared_lifetimes = set(self.__arguments)
         if isinstance(return_lifetime, TemporaryValue):
@@ -416,7 +426,8 @@ class FlowState:
         This partial copy will share global state with the main flow state, including the LLVM IR generator, library
         dependency tracking, and global addresses. It will have an independent set of lifetimes. This allows a handle to
         create a child control flow for implementing branching paths. Each fork must be finished. Lifetime identifiers
-        _cannot_ be shared across flow states and are not guaranteed to be globally unique.
+        **cannot** be shared across flow states and are not guaranteed to be globally unique.
+
         :return: the new flow state that will share the same global addresses and builder as this one
         """
         return FlowState(self.__builder, self.__dependencies, self.__global_addresses, self.__library_dependencies)
@@ -427,6 +438,7 @@ class FlowState:
         not only has no dependant values, but it also only depends on the initial lifetimes of a flow state. For a call
         site, the initial lifetimes are that of the arguments. For a forked value, any values that were live at the time
         of forking as allowed as parent lifetimes of the plucked value.
+
         :param lifetime: the lifetime identifier to pluck
         """
         (parents, _, _) = self.__dependencies[lifetime]
@@ -434,9 +446,10 @@ class FlowState:
             assert parent in self.__arguments, f"Trying to prune {lifetime}, but it depends on temporary {parent}."
         self.transfer(lifetime)
 
-    def transfer(self, lifetime) -> None:
+    def transfer(self, lifetime: int) -> None:
         """
-        Transfers to another controller a lifetime by dropping any dependant values
+        Transfers to another controller a lifetime by dropping any dependant values.
+
         :param lifetime: the lifetime to transfer
         """
         del self.__dependencies[lifetime]
@@ -455,8 +468,9 @@ class FlowState:
         desired address for that constant into this table. LLVM does not permit writing raw addresses for function
         pointers, so this acts as a workaround. Moreover, these addresses can be updated dynamically using the
         invalidation mechanism. Strictly, these don't have to be function pointers; they can be any kind of pointer.
+
         :param name: the name to use; there is no duplication control, so if two handles use a colliding name for
-        different addresses, the behaviour is undefined.
+            different addresses, the behaviour is undefined.
         :param ty: the LLVM type for the symbol; the returned value is a pointer to this type
         :param address: the real machine address to use for this symbol
         :return: an LLVM global constant for this binding
@@ -563,7 +577,8 @@ class TemporaryValue:
         """
         Drops any dependant values and transfers control of this value
 
-        Note that this is what you should call if returning the result of a call
+        Note that this is what you should call if returning the result of a call.
+
         :return: the LLVM value
         """
         assert self.__live, "Cannot transfer dead value"
@@ -579,7 +594,7 @@ class ControlFlow:
     This super type can be used for a control flow that does not support alternate control flow. There is a separate
     control flow that allow using the CPython exception mechanism for non-linear flow. The callsite must have one
     top-level flow control, but the handles within don't have to match exactly. It is possible to have handles that can
-    adapt from one flow control to another (_e.g._, check `errno` and turn it into a Python exception) or if flow
+    adapt from one flow control to another (*e.g.*, check ``errno`` and turn it into a Python exception) or if flow
     controls are logical subsets of one another (_e.g._, a handle using this flow control, which is infallible/linear,
     can be used inside a callsite that has takes another flow control); said another way, you can always use a handle
     that doesn't throw in a callsite that handles a throw.
@@ -595,13 +610,13 @@ class ControlFlow:
     def builder(self) -> IRBuilder:
         """
         Access the LLVM IR builder for this flow control.
-        :return:
         """
         return self.__state.builder
 
     def add_library_dependency(self, name: str) -> None:
         """
         Adds an OrcJIT dependency to the callsite.
+
         :param name: the name of the library
         """
         self.__state.add_library_dependency(name)
@@ -612,11 +627,13 @@ class ControlFlow:
         Calls another handle.
 
         This is the correct way to invoke another handle to ensure memory management is done correctly.
+
         :param handle: the handle to call
         :param args: the arguments to pass to that handle; each argument can be the output of an previously called
-        handle or a raw value connected to the caller's handle arguments (_i.e._, the index of the handle's arguments
-        indicates how the lifetime of the result of this function is connected to the caller's own input)
+            handle or a raw value connected to the caller's handle arguments (*i.e.*, the index of the handle's
+            arguments indicates how the lifetime of the result of this function is connected to the caller's own input)
         :return: the return value from that handle
+
         """
         (callee_return_type, callee_return_management) = handle.handle_return()
         callee_argument_info = handle.handle_arguments()
@@ -703,7 +720,8 @@ class ControlFlow:
 
     def _create_branch(self, state) -> "F":
         """
-        Creates a new control flow that is a separate of the existing flow for a branched execution pattern
+        Creates a new control flow that is a separate of the existing flow for a branched execution pattern.
+
         :param state: the control flow state to use
         :return: the new control flow state
         """
@@ -712,6 +730,7 @@ class ControlFlow:
     def drop_arg(self, index: int) -> None:
         """
         Triggers generation of a drop for an argument. This is only safe if the argument is transferred.
+
         :param index: the position of the argument as seen by the current handle
         """
         (caller, caller_arg_lifetimes, _) = self.__arg_lifetimes[-1]
@@ -732,7 +751,8 @@ class ControlFlow:
         """
         Register a callback that will be executed when the current handle frame is exited.
 
-        This will be executed _after_ any lifetime management occurs.
+        There is no guarantee when this will execute relative to any lifetime management.
+
         :param cleanup: the callback to execute
         """
         self.__arg_lifetimes[-1][2].append(cleanup)
@@ -745,8 +765,9 @@ class ControlFlow:
         desired address for that constant into this table. LLVM does not permit writing raw addresses for function
         pointers, so this acts as a workaround. Moreover, these addresses can be updated dynamically using the
         invalidation mechanism. Strictly, these don't have to be function pointers; they can be any kind of pointer.
+
         :param name: the name to use; there is no duplication control, so if two handles use a colliding name for
-        different addresses, the behaviour is undefined.
+            different addresses, the behaviour is undefined.
         :param ty: the LLVM type for the symbol; the returned value is a pointer to this type
         :param address: the real machine address to use for this symbol
         :return: an LLVM global constant for this binding
@@ -801,6 +822,7 @@ class InvalidationListener:
         Using a call site as a handle does not require recompiling any call sites using it, but the function pointer
         that references the updated call site. This indicates that the function pointer has change and needs to be
         updated.
+
         :param name: the internal name of the call site being used as a handle
         :param address: the new address of the function to use
         """
@@ -826,6 +848,7 @@ class InvalidationTarget(InvalidationListener):
     def invalidate_address(self, name: str, address: ctypes.c_char_p) -> None:
         """
         Trigger invalidation of the address of a call site and propagate that to its listeners.
+
         :param name: the internal name of the call site being used as a handle
         :param address:  the new address of the function to use
         """
@@ -834,14 +857,16 @@ class InvalidationTarget(InvalidationListener):
 
     def register(self, listener: InvalidationListener) -> None:
         """
-        Add a listener to receive invalidation updates for this object
+        Add a listener to receive invalidation updates for this object.
+
         :param listener: the listener to notify when changes happen
         """
         self.__listeners.add(listener)
 
     def unregister(self, listener: InvalidationListener) -> None:
         """
-        Remove a listener to stop receiving invalidation updates
+        Remove a listener to stop receiving invalidation updates.
+
         :param listener:  the listener to remove
         """
         self.__listeners.remove(listener)
@@ -854,7 +879,7 @@ class Handle(InvalidationTarget, Generic[F]):
     """
     A handle is a small function-like behaviour that can be composed and converted to machine code
 
-    Handles, based on the Java Virtual Machine's `MethodHandle`, are a way to dynamically change a kind of special
+    Handles, based on the Java Virtual Machine's ``MethodHandle``, are a way to dynamically change a kind of special
     function pointer. Every handle is defined by a type signature with a single return value and multiple parameter
     types. Handles can be combined to create new handles with different type signatures. Once inserted into a call site,
     the handles will be converted to machine code and can be executed. The call site can be used as a handle, though it
@@ -917,17 +942,18 @@ class Handle(InvalidationTarget, Generic[F]):
 
     def generate_handle_ir(self, flow: F, args: Sequence[IRValue]) -> Union[TemporaryValue, IRValue]:
         """
-        Convert the handle into LLVM machine code
+        Convert the handle into LLVM machine code.
+
         :param flow: the flow control builder
         :param args: the arguments to the handle
-
         :return: the value that is the output of the handle
         """
         pass
 
     def handle_arguments(self) -> Sequence[Tuple[Type, ArgumentManagement]]:
         """
-        Gets the argument information of the handle as a sequence of argument type and management pairs
+        Gets the argument information of the handle as a sequence of argument type and management pairs.
+
         :return: a sequence of tuples with the type and management for each argument
         """
         pass
@@ -937,6 +963,7 @@ class Handle(InvalidationTarget, Generic[F]):
         Gets the return information of a handle as a pair of the type and memory management semantics.
 
         Note that argument semantics determine the lifetime of the output, so that information is not provided here.
+
         :return: a pair of the return type and the memory management of the return value
         """
         pass
@@ -966,7 +993,8 @@ class ControlFlowType(Generic[F]):
                     arg_types: Sequence[Tuple[Type, ArgumentManagement]]) ->\
             F:
         """
-        Constructs a new control flow for a single compilation pass
+        Constructs a new control flow for a single compilation pass.
+
         :param state: the fixed information for the control flow
         :param return_type: the return type of the callsite
         :param return_management: the return management of the callsite
@@ -982,10 +1010,11 @@ class ControlFlowType(Generic[F]):
         """
         Creates an appropriate Python function for the call site to invoke when called, if possible.
 
-        This can create any synthetic parameters (_e.g._, callbacks for asynchronous flow) or register the calling
+        This can create any synthetic parameters (*e.g.*, callbacks for asynchronous flow) or register the calling
         convention with respect to the Python GIL. Ultimately, this will be invoked when the callite is used as a
         callable in Python and can do whatever is appropriate for this flow. If the signature means that the handle
-        cannot be used safely from Python, this function can throw an exception
+        cannot be used safely from Python, this function can throw an exception.
+
         :param ret: the return information of the callsite
         :param arguments: the argument information of the callsite
         :param address: the address of the compiled callsite
@@ -1027,7 +1056,8 @@ class CallSite(Handle):
 
     def __init__(self, handle: Handle[F], flow_type: ControlFlowType = ControlFlowType()):
         """
-        Create a new callsite that wraps an existing handle
+        Create a new callsite that wraps an existing handle.
+
         :param handle: the handle to place in the callsite; it can be updated later, but a handle must be supplied
         :param flow_type: the control flow to be used for the callsite; the handle must be compatible with this flow
         """
@@ -1052,11 +1082,12 @@ class CallSite(Handle):
     @property
     def address(self) -> ctypes.c_char_p:
         """
-        The address of the compiled version of the callsite (_i.e._, the function pointer that references inside the
+        The address of the compiled version of the callsite (*i.e.*, the function pointer that references inside the
         callsite.
 
         Note that this is not guaranteed to be a stable address. If the callsite is regenerated, this address may
         change. To track the address, use the invalidation subscription mechanism.
+
         :return: the address to the compiled contents of the callsite
         """
         return self.__address
@@ -1064,7 +1095,8 @@ class CallSite(Handle):
     @property
     def handle(self) -> Handle[F]:
         """
-        The current handle inside the call site
+        The current handle inside the call site.
+
         :return: the handle
         """
         return self.__handle
@@ -1210,13 +1242,13 @@ class DerefPointer(Handle):
     Dereferences a pointer and returns the value
 
     The machine concept of a pointer is well-understood, but that does not make for a good type system. For instance,
-    C's `FILE*` is a pointer, but it should never be de-referenced as the structure inside `FILE` should be an opaque
-    implementation detail. The compromise that is made is that any `Type` can have an LLVM type that is a pointer, but
-    the type system built on handles doesn't strictly _know_ that it is a pointer. That is, just because a type has an
-    LLVM type that is a pointer, does not require that handles be allowed to dereference it. If a type wants to be
-    dereferencable, it should extend `Deref` and provide the high-level type of its contents.
+    C's ``FILE*`` is a pointer, but it should never be de-referenced as the structure inside ``FILE`` should be an
+    opaque implementation detail. The compromise that is made is that any ``Type`` can have an LLVM type that is a
+    pointer, but the type system built on handles doesn't strictly _know_ that it is a pointer. That is, just because a
+    type has an LLVM type that is a pointer, does not require that handles be allowed to dereference it. If a type wants
+    to be dereferencable, it should extend ``Deref`` and provide the high-level type of its contents.
 
-    This handle can operate in two ways: given a type that implement `Deref`, it can automatically figure out the
+    This handle can operate in two ways: given a type that implement ``Deref``, it can automatically figure out the
     corresponding return type. It can also be used in a coercive mode where both source and target types are provided
     and it only checks if the LLVM types are compatible.
     """
@@ -1278,8 +1310,8 @@ class IgnoreArguments(Handle):
     Creates a new handle that discards arguments before calling another handle.
 
     Depending on perspective, this drops or inserts arguments into a handle to allow it to discard unnecessary
-    arguments. Given a handle `t f(t0, t1)`, dropping `e0` at index 1 would produce a handle with the signature:
-    `t d(t0, e0, t1)`. Since arguments can be inserted at the end of the signature, the index can be the length of the
+    arguments. Given a handle ``t f(t0, t1)``, dropping ``e0`` at index 1 would produce a handle with the signature:
+    ``t d(t0, e0, t1)``. Since arguments can be inserted at the end of the signature, the index can be the length of the
     original handle's argument list.
 
     All arguments are borrowed. If you need to drop them, apply a take ownership handle after.
@@ -1333,8 +1365,9 @@ class PreprocessArgument(Handle):
     Preprocesses a single argument of a handle using another handle.
 
     Unlike casting operations, this does not require a 1:1 match between handle types. Given a handle:
-    `t f(t0, t1, t2, t3)` and `t2 g(s0, s1, s2)`, then preprocessing `f` using `g` at index 2, will produce a handle
-    with the signature `t p(t0, t1, s0, s1, s2, t3)` which will behave as if `f(t0, t1, g(s0, s1, s2, s3), t3)`.
+    ``t f(t0, t1, t2, t3)`` and ``t2 g(s0, s1, s2)``, then preprocessing ``f`` using ``g`` at index 2, will produce a
+    handle with the signature ``t p(t0, t1, s0, s1, s2, t3)`` which will behave as if
+    ``f(t0, t1, g(s0, s1, s2, s3), t3)``.
     """
     __handle: Handle
     __preprocessor: Handle
