@@ -6,8 +6,8 @@ from llvmlite.ir import IRBuilder, Value as IRValue, Type as LLType
 
 import dispyatcher.general
 import llvmlite.ir.types
-from dispyatcher import ArgumentManagement, BaseTransferUnaryHandle, ControlFlow, DerefPointer, F, FlowState, Handle,\
-    Identity, Type, ReturnManagement
+from dispyatcher import ArgumentManagement, BaseTransferUnaryHandle, ControlFlow, DerefPointer, F, FlowState, Handle, \
+    Identity, Type, ReturnManagement, TemporaryValue
 from dispyatcher.accessors import GetElementPointer
 from dispyatcher.general import BaseIndirectFunction, CurrentProcessFunction, MachineType
 from dispyatcher.permute import implode_args
@@ -215,6 +215,43 @@ class AlwaysThrow(Handle[PythonControlFlow]):
 
     def handle_return(self) -> Tuple[Type, ReturnManagement]:
         return self.__ty, self.__transfer
+
+
+class CheckAndUnwind(Handle[PythonControlFlow]):
+    """
+    Wraps another handle, usually a function, and checks if a Python exception has been raised.
+
+    This serves as an adapter between arbitrary function call handles that don't return useful status codes and the flow
+    control mechanism.
+    """
+    __handle: Handle[PythonControlFlow]
+
+    def __init__(self, handle: Handle[PythonControlFlow]):
+        super().__init__()
+        self.__handle = handle
+
+    def __str__(self) -> str:
+        return f"CheckAndUnwind({self.__handle})"
+
+    def generate_handle_ir(self, flow: PythonControlFlow, args: Sequence[IRValue]) -> Union[TemporaryValue, IRValue]:
+        result = self.__handle.generate_handle_ir(flow, args)
+        occurred_fn = flow.use_native_function("PyErr_Occurred", PY_OBJECT_TYPE.machine_type(), ())
+        comparison = flow.builder.icmp_unsigned('==',
+                                                flow.builder.call(occurred_fn, ()),
+                                                PY_OBJECT_TYPE.machine_type()(None))
+        fail_block = flow.builder.append_basic_block('check_failed')
+        success_block = flow.builder.append_basic_block('check_ok')
+        flow.builder.cbranch(comparison, fail_block, success_block)
+        flow.builder.position_at_start(fail_block)
+        flow.unwind()
+        flow.builder.position_at_start(success_block)
+        return result
+
+    def handle_arguments(self) -> Sequence[Tuple[Type, ArgumentManagement]]:
+        return self.__handle.handle_arguments()
+
+    def handle_return(self) -> Tuple[Type, ReturnManagement]:
+        return self.__handle.handle_return()
 
 
 class CFunctionHandle(BaseIndirectFunction):
