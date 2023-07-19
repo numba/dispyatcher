@@ -56,3 +56,8 @@ class PythonFlowTests(unittest.TestCase):
         self.assertEqual(callsite(ctypes.py_object({"a": 1}), ctypes.py_object("a")), 1)
         with self.assertRaises(ValueError):
             callsite(ctypes.py_object({"a": 1}), ctypes.py_object("b"))
+
+    def test_value(self):
+        self_handle = dispyatcher.cpython.Value(self, transfer=dispyatcher.ReturnManagement.TRANSFER)
+        callsite = CallSite(self_handle, PythonControlFlowType())
+        self.assertEqual(self, callsite())

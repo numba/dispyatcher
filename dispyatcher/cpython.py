@@ -678,6 +678,71 @@ class WithoutGlobalInterpreterLock(Handle[PythonControlFlow]):
         return self.__handle.handle_return()
 
 
+class Value(Handle[PythonControlFlow]):
+    """
+    A handle that returns a Python object
+    """
+    __value: ctypes.py_object
+    __type: type
+    __transfer: ReturnManagement
+
+    def __init__(self, value: Any,
+                 ty: Union[type, PyObjectType, None] = None,
+                 transfer: ReturnManagement = ReturnManagement.BORROW):
+        """
+        Creates a new handle that returns an updatable Python object
+
+        :param value: the value to return
+        :param ty: the Python type the handle will return. This can be explicitly provided as a Python type or a
+            ``PyObjectType`` or it can be automatically inferred from the value provided (``None``). Note that the value
+            must be an instance of this type.
+        :param transfer: whether to return a borrowed or transferred instance of the object. Note that transferring does
+            not remove the value from this handle; it increments the reference count on the object and returns that.
+        """
+        super().__init__()
+        if ty is None:
+            self.__type = type(value)
+        elif isinstance(ty, PyObjectType):
+            self.__type = ty.python_type
+        elif isinstance(ty, type):
+            self.__type = ty
+        else:
+            raise TypeError(f"Cannot create handle for type {ty}.")
+        assert isinstance(value, self.__type), f"Value {value} is not of type {self.__type}"
+        self.__transfer = transfer
+        self.__value = ctypes.py_object(value)
+
+    @property
+    def value(self) -> Any:
+        return self.__value
+
+    @value.setter
+    def value(self, value) -> None:
+        assert isinstance(value, self.__type), f"Value {value} is not of type {self.__type}"
+        self.__value = ctypes.py_object(value)
+        self.invalidate_address(f"value_{id(self)}", ctypes.c_char_p.from_address(ctypes.addressof(self.__value)))
+
+    def __str__(self) -> str:
+        return f"Value[{self.__transfer.name}]({repr(self.__value)}) → {self.__type}"
+
+    def generate_handle_ir(self, flow: F, args: Sequence[IRValue]) -> IRValue:
+        global_value = flow.upsert_global_binding(f"value_{id(self)}",
+                                                  PY_OBJECT_TYPE.machine_type().pointee,
+                                                  ctypes.c_char_p.from_address(ctypes.addressof(self.__value)))
+        result = flow.builder.load(global_value)
+        print(result, global_value)
+        if self.__transfer == ReturnManagement.TRANSFER:
+            inc_ref = flow.use_native_function("Py_IncRef", llvmlite.ir.VoidType(), (PY_OBJECT_TYPE.machine_type(),))
+            flow.builder.call(inc_ref, (result,))
+        return result
+
+    def handle_arguments(self) -> Sequence[Tuple[Type, ArgumentManagement]]:
+        return ()
+
+    def handle_return(self) -> Tuple[Type, ReturnManagement]:
+        return PyObjectType(self.__type), self.__transfer
+
+
 PY_DICT_NEW = CurrentProcessFunction(PY_DICT_TYPE, ReturnManagement.TRANSFER, "PyDict_New")
 PY_DICT_CLEAR = CurrentProcessFunction(MachineType(llvmlite.ir.VoidType()),
                                        ReturnManagement.TRANSFER,
