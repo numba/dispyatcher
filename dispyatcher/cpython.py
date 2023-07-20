@@ -643,8 +643,8 @@ def find_unpack(ty: Type) -> TupleElement:
     """
     Attempts to find a tuple element that matches an arbitrary type
 
-    If the type implements ``TupleElement``, then it will be used as itself. Otherwise, if the type has a numeric machine
-    type, an appropriate tuple element based on that machine type will be used.
+    If the type implements ``TupleElement``, then it will be used as itself. Otherwise, if the type has a numeric
+    machine type, an appropriate tuple element based on that machine type will be used.
 
     :param ty: the type to find a matching tuple element representation of
     :return: the best match, if found, otherwise, a ``ValueError`` will be raised.
