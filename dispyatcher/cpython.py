@@ -9,12 +9,13 @@ import llvmlite.ir.types
 from dispyatcher import ArgumentManagement, BaseTransferUnaryHandle, ControlFlow, DerefPointer, F, FlowState, Handle, \
     Identity, Type, ReturnManagement, TemporaryValue
 from dispyatcher.accessors import GetElementPointer
-from dispyatcher.general import BaseIndirectFunction, CurrentProcessFunction, MachineType
+from dispyatcher.general import BaseIndirectFunction, CurrentProcessFunction, MachineType, UncheckedArray
 from dispyatcher.permute import implode_args
 from dispyatcher.repacking import Repacker, RepackingDispatcher, RepackingState
 
 INT_RESULT_TYPE = llvmlite.ir.types.IntType(ctypes.sizeof(ctypes.c_int) * 8)
 SIZE_T_TYPE = llvmlite.ir.types.IntType(ctypes.sizeof(ctypes.c_size_t) * 8)
+CHAR_ARRAY = UncheckedArray(MachineType(llvmlite.ir.IntType(8)))
 
 
 class PythonControlFlow(dispyatcher.ControlFlow):
@@ -804,3 +805,7 @@ PY_DICT_SIZE = CurrentProcessFunction(MachineType(SIZE_T_TYPE),
                                       ReturnManagement.TRANSFER,
                                       "PyDict_Size",
                                       (PY_DICT_TYPE, ArgumentManagement.BORROW_TRANSIENT))
+PY_UNICODE_FROM_STRING = CurrentProcessFunction(PyObjectType(str),
+                                                ReturnManagement.TRANSFER,
+                                                "PyUnicode_FromString",
+                                                (CHAR_ARRAY, ArgumentManagement.BORROW_TRANSIENT))

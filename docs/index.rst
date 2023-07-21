@@ -48,6 +48,9 @@ Once a handle is constructed, creating a ``Callsite`` will compile it and turn i
 .. automodule:: dispyatcher.accessors
     :members:
 
+.. automodule:: dispyatcher.allocation
+    :members:
+
 .. automodule:: dispyatcher.cpython
     :members:
 

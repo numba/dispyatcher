@@ -6,14 +6,15 @@ import llvmlite.ir
 import dispyatcher
 import dispyatcher.general
 from dispyatcher import CallSite, Identity, IgnoreArguments
-from dispyatcher.general import SimpleConstant
+from dispyatcher.allocation import CollectIntoArray
+from dispyatcher.general import MachineType, SimpleConstant
 from dispyatcher.cpython import TupleUnpackingDispatcher, PY_OBJECT_TYPE, PythonControlFlowType
 
 
 class RepackTests(unittest.TestCase):
 
     def test_tuple_unpack_int(self):
-        i32 = dispyatcher.general.MachineType(llvmlite.ir.IntType(32))
+        i32 = MachineType(llvmlite.ir.IntType(32))
         tud = TupleUnpackingDispatcher(IgnoreArguments(SimpleConstant(i32, -1), 0, PY_OBJECT_TYPE), 0)
         tud.append(Identity(i32), None)
         callsite = CallSite(tud, PythonControlFlowType())
@@ -24,7 +25,7 @@ class RepackTests(unittest.TestCase):
         self.assertEqual(callsite(ctypes.py_object((7.5,))), -1)
 
     def test_tuple_unpack_double(self):
-        dbl = dispyatcher.general.MachineType(llvmlite.ir.DoubleType())
+        dbl = MachineType(llvmlite.ir.DoubleType())
         tud = TupleUnpackingDispatcher(IgnoreArguments(SimpleConstant(dbl, -1), 0, PY_OBJECT_TYPE), 0)
         tud.append(Identity(dbl), None)
         callsite = CallSite(tud, PythonControlFlowType())
@@ -61,3 +62,10 @@ class PythonFlowTests(unittest.TestCase):
         self_handle = dispyatcher.cpython.Value(self, transfer=dispyatcher.ReturnManagement.TRANSFER)
         callsite = CallSite(self_handle, PythonControlFlowType())
         self.assertEqual(self, callsite())
+
+    def test_array_collection(self):
+        # This is really an allocation test, but we use Python infrastructure to make it pleasant
+        i8 = MachineType(llvmlite.ir.IntType(8))
+        handle = CollectIntoArray(i8, 2, null_terminated=True) + dispyatcher.cpython.PY_UNICODE_FROM_STRING
+        callsite = CallSite(handle, PythonControlFlowType())
+        self.assertEqual(callsite(ord('h'), ord('i')), "hi")
