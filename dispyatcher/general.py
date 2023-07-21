@@ -5,8 +5,8 @@ import llvmlite.ir
 from llvmlite.ir import Type as LLType, Value as IRValue
 from llvmlite.binding import ResourceTracker
 
-from dispyatcher import Type, is_llvm_floating_point, Handle, llvm_type_to_ctype, Deref, F, FlowState, ControlFlow, \
-    BaseTransferUnaryHandle, ReturnManagement, ArgumentManagement, TemporaryValue
+from dispyatcher import ArgumentManagement, BaseTransferUnaryHandle, ControlFlow, Deref, F, FlowState, Handle,\
+    ReturnManagement, TemporaryValue, Type, is_llvm_floating_point
 from dispyatcher.accessors import GetPointer
 
 
@@ -80,9 +80,9 @@ class UncheckedArray(Deref, GetPointer):
     This array is a linear block of entries with no bounds checking or known length. It provides the same unsafe
     behaviour as C; you're welcome. It is intended mostly for compatibility with C.
     """
-    __element_type: LLType
+    __element_type: Type
 
-    def __init__(self, element_type: LLType):
+    def __init__(self, element_type: Type):
         self.__element_type = element_type
 
     def __eq__(self, o: object) -> bool:
@@ -92,19 +92,19 @@ class UncheckedArray(Deref, GetPointer):
             return False
 
     def __str__(self) -> str:
-        return f"Unchecked Array of {self.__element_type}"
+        return f"UncheckedArray({self.__element_type})"
 
     def target(self) -> Type:
-        return MachineType(self.__element_type)
+        return self.__element_type
 
     def target_pointer(self) -> Type:
         return self
 
     def ctypes_type(self):
-        return ctypes.POINTER(llvm_type_to_ctype(self.__element_type))
+        return ctypes.POINTER(self.__element_type.ctypes_type())
 
     def machine_type(self) -> LLType:
-        return self.__element_type.as_pointer()
+        return self.__element_type.machine_type().as_pointer()
 
 
 class BitCast(BaseTransferUnaryHandle[ControlFlow]):
