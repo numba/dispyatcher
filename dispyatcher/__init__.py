@@ -219,8 +219,8 @@ class Pointer(Deref):
     def clone_is_self_contained(self) -> bool:
         return False
 
-    def drop(self, builder: IRBuilder, value: IRValue) -> None:
-        pass
+    def drop(self, flow: "FlowState", value: IRValue) -> None:
+        self.__inner.drop(flow, flow.builder.load(value))
 
     def __eq__(self, o: object) -> bool:
         if isinstance(o, Pointer):
@@ -228,7 +228,7 @@ class Pointer(Deref):
         return False
 
     def __str__(self) -> str:
-        return f"Pointer to {self.__inner}"
+        return f"Pointer({self.__inner})"
 
 
 ArgumentManagement = enum.Enum('ArgumentManagement', [
