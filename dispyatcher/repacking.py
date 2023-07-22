@@ -1,7 +1,7 @@
 from llvmlite.ir import Block, Value as IRValue
 from typing import Generic, Iterable, List, Optional, Sequence, Set, Tuple, TypeVar
 
-from dispyatcher import ArgumentManagement, F, Handle, InvalidationTarget, ReturnManagement, Type
+from dispyatcher import ArgumentManagement, DiagramState, F, Handle, InvalidationTarget, ReturnManagement, Type
 
 
 class RepackingState:
@@ -221,6 +221,11 @@ class RepackingDispatcher(Handle, Generic[T]):
 
     def handle_return(self) -> Tuple[Type, ReturnManagement]:
         return self.__fallback.handle_return()
+
+    def generate_handle_diagram(self, diagram: DiagramState, args: Sequence[str]) -> str:
+        cases = [(str(repacker), handle) for handle, repacker in self.__dispatch]
+        cases.append(("Fallback", self.__fallback))
+        return diagram.dispatch(cases, args)
 
     def generate_handle_ir(self, flow: F, args: Sequence[IRValue]) -> IRValue:
         output_block = flow.builder.append_basic_block()

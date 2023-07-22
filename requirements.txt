@@ -1,1 +1,2 @@
 llvmlite>=0.41
+graphviz>=0.20

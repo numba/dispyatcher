@@ -1,6 +1,7 @@
 import enum
 
 import ctypes
+import graphviz
 import llvmlite.binding
 import llvmlite.ir
 import weakref
@@ -797,6 +798,210 @@ class ControlFlow:
         return self.__state.use_native_global(name, ty)
 
 
+_COLOUR_PALETTE = [
+    "#eaaecf",
+    "#afc987",
+    "#74aff3",
+    "#eedea5",
+    "#53c6ef",
+    "#ecaa9a",
+    "#52c6cf",
+    "#ddbc98",
+    "#7dd5e6",
+    "#bcb67d",
+    "#c4b7ea",
+    "#99cc9a",
+    "#9dbbe6",
+    "#d2f0be",
+    "#98cdf1",
+    "#c8cd9c",
+    "#97ece1",
+    "#91bc9f",
+    "#a2ddbd",
+    "#85c8bb"]
+
+
+class DiagramState:
+    """
+    Holds a DOT/Graphviz diagram of a handle and all of its children
+    """
+    __graph: graphviz.Digraph
+    __colour_table: Dict[str, int]
+    __call_stack: List[Tuple["Handle", str, str]]
+    __id_generator: int
+
+    def __init__(self, handle: "Handle"):
+        """
+        Create a new diagram for a handle
+        """
+        self.__graph = graphviz.Digraph('Handle', strict=False)
+        self.__colour_table = {}
+        self.__call_stack = []
+        self.__id_generator = 0
+
+        self.__graph.attr(compound="true")
+
+        arg_labels = "|".join(f"<arg{idx}> {idx}: {graphviz.escape(str(ty))}"
+                              for idx, (ty, _) in enumerate(handle.handle_arguments()))
+        label = f"{{ Input | {{{arg_labels}}}}}"
+        self.__graph.node("input", graphviz.nohtml(label), shape="record")
+        result = self.call(handle, [f"input:arg{idx}" for idx in range(len(handle.handle_arguments()))])
+        self.__graph.node("output", str(handle.handle_return()[0]), shape="doublecircle")
+        self.__graph.edge(result, "output")
+
+    def call(self, handle: "Handle", args: Sequence[str]) -> str:
+        """
+        Adds a new call to a graph directing to a provided handle.
+
+        :param handle: the handle to call
+        :param args: the graph identifiers for the arguments to that handle
+        :return: a graph identifier for the result
+        """
+        name = type(handle).__qualname__
+        if name not in self.__colour_table:
+            self.__colour_table[name] = len(self.__colour_table)
+        node_colour = _COLOUR_PALETTE[self.__colour_table[name] % len(_COLOUR_PALETTE)]
+        self.__call_stack.append((handle, name, node_colour))
+        result = handle.generate_handle_diagram(self, args)
+        self.__call_stack.pop()
+        return result
+
+    def dispatch(self, cases: Sequence[Tuple[str, "Handle"]], args: Sequence[str]) -> str:
+        node_id = f"cluster_dispatch{self.__id_generator}"
+        node_id_input = f"dispatch_input{self.__id_generator}"
+        node_id_output = f"dispatch_output{self.__id_generator}"
+        self.__id_generator += 1
+        g = self.__graph
+        (dispatch_handle, name, node_colour) = self.__call_stack[-1]
+        with self.__graph.subgraph(name=node_id) as s:
+            s.attr(label=name, color=node_colour, style="fill")
+            dispatch_args = dispatch_handle.handle_arguments()
+            arg_labels = "|".join(f"<arg{idx}> {idx}: {graphviz.escape(str(ty))}"
+                                  for idx, (ty, _) in enumerate(dispatch_args))
+            label = f"{{ {{{arg_labels}}} | Dispatch Input}}"
+            s.node(node_id_input, graphviz.nohtml(label), shape="record")
+
+            for idx, arg in enumerate(args):
+                g.edge(arg, f"{node_id_input}:arg{idx}")
+
+            outputs = []
+            for idx, (label, handle) in enumerate(cases):
+                case_name = f"{node_id}_case{idx}"
+                case_input = f"{case_name}_input"
+                with s.subgraph(name=case_name) as case_graph:
+                    case_graph.attr(label=label, color="#dfdfdf", style="fill")
+                    arg_labels = "|".join(f"<arg{idx}> {idx}: {graphviz.escape(str(ty))}"
+                                          for idx, (ty, _) in enumerate(handle.handle_arguments()))
+                    label = f"{{ Case Input | {{{arg_labels}}}}}"
+                    case_graph.node(case_input, graphviz.nohtml(label), shape="record")
+                    s.edge(node_id_input, case_input, style="dashed")
+                    self.__graph = case_graph
+                    outputs.append(self.call(handle, [f"{case_input}:arg{idx}"
+                                                      for idx in range(len(handle.handle_arguments()))]))
+
+            s.node(node_id_output, str(dispatch_handle.handle_return()[0]), shape="doublecircle")
+            for output in outputs:
+                s.edge(output, node_id_output)
+
+        self.__graph = g
+        return node_id_output
+
+    def simple_handle(self, args: Sequence[str]) -> str:
+        """
+        Renders a graph node as a block with slots for arguments and the name of the handle.
+
+        A colour will be automatically picked. This is the default and no intervention is required to use it.
+
+        :param args: the graph identifiers for the arguments to that handle
+        :return: a graph identifier for the result
+        """
+        node_id = f"handle{self.__id_generator}"
+        self.__id_generator += 1
+        (handle, name, node_colour) = self.__call_stack[-1]
+        arg_labels = "|".join(f"<arg{idx}> {idx}: {graphviz.escape(str(ty))}"
+                              for idx, (ty, _) in enumerate(handle.handle_arguments()))
+        self.__graph.node(node_id, graphviz.nohtml(f"{{{{{arg_labels}}} | {graphviz.escape(str(handle))} |<ret>{name}}}"),
+                          shape="record",
+                          style="filled",
+                          fillcolor=node_colour)
+        for idx, arg in enumerate(args):
+            self.__graph.edge(arg, f"{node_id}:arg{idx}")
+        return f"{node_id}:ret"
+
+    def transform(self, arg: str, note: str) -> str:
+        """
+        Creates an edge with a label for simple operations.
+
+        Some 1:1 handles do trivial operations (*e.g.*, a null check) and creating a block would clutter the diagram.
+        This provides an alternative representation for those handles.
+
+        :param arg: the graph identifier of the single input
+        :param note: the label to apply to the operation
+        :return: the graph identifier for the result
+        """
+        node_id = f"note{self.__id_generator}"
+        self.__id_generator += 1
+        self.__graph.node(node_id, note, shape="none")
+        self.__graph.edge(arg, node_id)
+        return node_id
+
+    def wrap(self, handle: "Handle", args: Sequence[str]) -> str:
+        """
+        Create a block with a handle inside it.
+
+        Some handles wrap calls to other handles to perform stateful operations (*e.g.*, with GIL). This is the
+        preferred representation for those handles.
+
+        :param handle: the inner handle being wrapped
+        :param args: the arguments to the inner handle
+        :return: the graph identifier for the result
+        """
+        node_id = f"wrap{self.__id_generator}"
+        self.__id_generator += 1
+        g = self.__graph
+        (_, name, node_colour) = self.__call_stack[-1]
+        with self.__graph.subgraph(name=node_id, label=name, color=node_colour) as s:
+            self.__graph = s
+            result = self.call(handle, args)
+
+        self.__graph = g
+        return result
+
+    def render(self, filename, output_format: str = 'png') -> None:
+        """
+        Renders the diagram as an image.
+
+        :param filename: the output filename to store the image; this should not include a suffix because GraphViz
+        :param output_format: the file format supported by GraphViz
+        """
+        self.__graph.render(filename=filename, format=output_format, cleanup=True)
+
+    def render_and_load(self, output_format: str = 'png') -> bytes:
+        """
+        Renders the diagram as an image and provides it as a byte array.
+
+        :param output_format: the file format supported by GraphViz
+        :return: the image as bytes
+        """
+        return self.__graph.pipe(format=output_format)
+
+    def save(self, filename) -> None:
+        """
+        Stores the GraphViz description of this handle in a file.
+
+        :param filename: the filename
+        """
+        self.__graph.save(filename=filename)
+
+    def saves(self) -> str:
+        """
+        Stores the GraphViz description of this handle in a string
+
+        :return: the GraphViz data
+        """
+        return self.__graph.source
+
+
 class InvalidationListener:
     """
     A mixin for processing update events
@@ -940,6 +1145,20 @@ class Handle(InvalidationTarget, Generic[F]):
         else:
             raise TypeError(f"Unsupported operand type for @: {type(other)}")
 
+    # noinspection PyMethodMayBeStatic
+    def generate_handle_diagram(self, diagram: DiagramState, args: Sequence[str]) -> str:
+        """
+        Draws a diagram of how this node operates.
+
+        Most subclasses don't need to override this as it will produce a sensible little block. Handles that manipulate
+        flow control should to create a better diagram.
+
+        :param diagram: the diagram being rendered to
+        :param args: the graph identifiers for the arguments to this handle
+        :return: the graph identifier that is the output of this handle
+        """
+        return diagram.simple_handle(args)
+
     def generate_handle_ir(self, flow: F, args: Sequence[IRValue]) -> Union[TemporaryValue, IRValue]:
         """
         Convert the handle into LLVM machine code.
@@ -967,6 +1186,14 @@ class Handle(InvalidationTarget, Generic[F]):
         :return: a pair of the return type and the memory management of the return value
         """
         pass
+
+    def show_diagram(self) -> DiagramState:
+        """
+        Renders this handle as a DOT graph for debugging.
+
+        :return: the diagram
+        """
+        return DiagramState(self)
 
 
 _call_site_id = 0
@@ -1169,6 +1396,14 @@ class CallSite(Handle):
         value = flow.upsert_global_binding(self.__id, self.__type, self.__address)
         return flow.builder.call(flow.builder.load(value), args)
 
+    def show_diagram(self) -> DiagramState:
+        """
+        Renders this handle as a DOT graph for debugging.
+
+        :return: the diagram
+        """
+        return DiagramState(self.__handle)
+
 
 class BaseTransferUnaryHandle(Handle[F], Generic[F]):
     """
@@ -1221,6 +1456,10 @@ class Clone(Handle[ControlFlow]):
 
     def __str__(self) -> str:
         return f"Clone[{self.__type}]"
+
+    def generate_handle_diagram(self, diagram: DiagramState, args: Sequence[str]) -> str:
+        (arg,) = args
+        return diagram.transform(arg, "Clone")
 
     def generate_handle_ir(self, flow: F, args: Sequence[IRValue]) -> Union[IRValue, TemporaryValue]:
         (arg, ) = args
@@ -1294,6 +1533,10 @@ class Identity(BaseTransferUnaryHandle[ControlFlow]):
         if arg_ty:
             assert arg_ty.machine_type() == ty.machine_type(), f"Cannot do no-op conversion from {arg_ty} to {ty}"
 
+    def generate_handle_diagram(self, diagram: DiagramState, args: Sequence[str]) -> str:
+        (arg,) = args
+        return arg
+
     def generate_handle_ir(self, flow: F, args: Sequence[IRValue]) -> Union[IRValue, TemporaryValue]:
         (arg, ) = args
         return arg
@@ -1334,6 +1577,12 @@ class IgnoreArguments(Handle):
     def __str__(self) -> str:
         args = ', '.join(str(a) for a in self.__extra_args)
         return f"Ignore[{self.__capture.name}]({args}) at {self.__index} of {self.__handle}"
+
+    def generate_handle_diagram(self, diagram: DiagramState, args: Sequence[str]) -> str:
+        handle_args = []
+        handle_args.extend(a for a in args[0:self.__index])
+        handle_args.extend(a for a in args[self.__index + len(self.__extra_args):])
+        return diagram.call(self.__handle, handle_args)
 
     def generate_handle_ir(self, flow: F, args: Sequence[IRValue]) -> Union[IRValue, TemporaryValue]:
         handle_args = []
@@ -1391,6 +1640,18 @@ class PreprocessArgument(Handle):
     def __str__(self) -> str:
         return f"Preprocess ({self.__handle}) at {self.__index} with ({self.__preprocessor})"
 
+    def generate_handle_diagram(self, diagram: DiagramState, args: Sequence[str]) -> str:
+        preprocess_arg_len = len(self.__preprocessor.handle_arguments())
+        preprocessed_result = diagram.call(self.__preprocessor,
+                                           [a for a in args[self.__index:self.__index + preprocess_arg_len]])
+        if self.__needs_copy:
+            preprocessed_result = diagram.transform(preprocessed_result, "Clone")
+        handle_args = []
+        handle_args.extend(a for a in args[0:self.__index])
+        handle_args.append(preprocessed_result)
+        handle_args.extend(a for a in args[self.__index + preprocess_arg_len:])
+        return diagram.call(self.__handle, handle_args)
+
     def generate_handle_ir(self, flow: F, args: Sequence[IRValue]) -> Union[IRValue, TemporaryValue]:
         preprocess_arg_len = len(self.__preprocessor.handle_arguments())
         preprocessed_result = flow.call(self.__preprocessor, [(args[idx], (idx,)) for idx in
@@ -1436,6 +1697,10 @@ class TakeOwnership(Handle):
 
     def __str__(self) -> str:
         return f"TakeOwnership[{', '.join(str(a) for a in self.__owned_args)}] of {self.__handle}"
+
+    def generate_handle_diagram(self, diagram: DiagramState, args: Sequence[str]) -> str:
+        result = diagram.call(self.__handle, args)
+        return diagram.transform(result, "Drop")
 
     def generate_handle_ir(self, flow: F, args: Sequence[IRValue]) -> Union[IRValue, TemporaryValue]:
         result = flow.call(self.__handle, [(a, (i,)) for i, a in enumerate(args)])

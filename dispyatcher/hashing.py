@@ -3,7 +3,7 @@ from typing import List, Sequence, Dict, Any, Iterable, Tuple, Optional
 import llvmlite.ir
 from llvmlite.ir import IRBuilder, Value as IRValue
 
-from dispyatcher import Handle, Type, F, ReturnManagement, ArgumentManagement
+from dispyatcher import ArgumentManagement, DiagramState, F, Handle, ReturnManagement, Type
 
 
 class HashValueGuard:
@@ -193,6 +193,11 @@ class HashValueDispatcher(Handle):
 
     def handle_return(self) -> Tuple[Type, ReturnManagement]:
         return self.__fallback.handle_return()
+
+    def generate_handle_diagram(self, diagram: DiagramState, args: Sequence[str]) -> str:
+        cases = [(repr(values), handle) for d in self.__dispatch.values() for handle, values in d]
+        cases.append(("Fallback", self.__fallback))
+        return diagram.dispatch(cases, args)
 
     def generate_handle_ir(self, flow: F, args: Sequence[IRValue]) -> IRValue:
         (self_ret_type, _) = self.__fallback.handle_return()

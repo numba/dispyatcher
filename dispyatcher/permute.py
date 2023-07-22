@@ -3,7 +3,8 @@ from typing import Dict, List, Sequence, Tuple, TypeVar, Union
 
 from llvmlite.ir import Value as IRValue
 
-from dispyatcher import ArgumentManagement, F, Handle, PreprocessArgument, ReturnManagement, TemporaryValue, Type
+from dispyatcher import ArgumentManagement, DiagramState, F, Handle, PreprocessArgument, ReturnManagement,\
+    TemporaryValue, Type
 
 T = TypeVar('T')
 
@@ -39,6 +40,11 @@ class PermuteArguments(Handle):
 
     def __str__(self) -> str:
         return f"Permute[{(str(p) for p in self.__permutations)}] {self.__handle}"
+
+    def generate_handle_diagram(self, diagram: DiagramState, args: Sequence[str]) -> str:
+        for permutation in self.__permutations:
+            args = permutation.permute(args)
+        return diagram.call(self.__handle, args)
 
     def handle_arguments(self) -> Sequence[Tuple[Type, ArgumentManagement]]:
         args = self.__handle.handle_arguments()

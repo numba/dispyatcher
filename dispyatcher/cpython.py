@@ -6,8 +6,8 @@ from llvmlite.ir import IRBuilder, Value as IRValue, Type as LLType
 
 import dispyatcher.general
 import llvmlite.ir.types
-from dispyatcher import ArgumentManagement, BaseTransferUnaryHandle, ControlFlow, DerefPointer, F, FlowState, Handle, \
-    Identity, Type, ReturnManagement, TemporaryValue
+from dispyatcher import ArgumentManagement, BaseTransferUnaryHandle, ControlFlow, DerefPointer, DiagramState, F,\
+    FlowState, Handle, Identity, Type, ReturnManagement, TemporaryValue
 from dispyatcher.accessors import GetElementPointer
 from dispyatcher.general import BaseIndirectFunction, CurrentProcessFunction, MachineType, UncheckedArray
 from dispyatcher.permute import implode_args
@@ -234,6 +234,9 @@ class CheckAndUnwind(Handle[PythonControlFlow]):
     def __str__(self) -> str:
         return f"CheckAndUnwind({self.__handle})"
 
+    def generate_handle_diagram(self, diagram: DiagramState, args: Sequence[str]) -> str:
+        return diagram.wrap(self.__handle, args)
+
     def generate_handle_ir(self, flow: PythonControlFlow, args: Sequence[IRValue]) -> Union[TemporaryValue, IRValue]:
         result = self.__handle.generate_handle_ir(flow, args)
         occurred_fn = flow.use_native_function("PyErr_Occurred", PY_OBJECT_TYPE.machine_type(), ())
@@ -305,6 +308,10 @@ class ThrowIfNull(BaseTransferUnaryHandle[PythonControlFlow]):
         self.error = error
         assert isinstance(ty.machine_type(), llvmlite.ir.PointerType), "Type must be a pointer"
 
+    def generate_handle_diagram(self, diagram: DiagramState, args: Sequence[str]) -> str:
+        (arg,) = args
+        return diagram.transform(arg, f"Throw If Null")
+
     def generate_handle_ir(self, flow: F, args: Sequence[IRValue]) -> IRValue:
         (value, ) = args
         fail_block = flow.builder.append_basic_block('py_non_null_fail')
@@ -339,6 +346,9 @@ class CheckedCast(BaseTransferUnaryHandle[PythonControlFlow]):
     def _name(self) -> str:
         return "CheckedCast"
 
+    def generate_handle_diagram(self, diagram: DiagramState, args: Sequence[str]) -> str:
+        (arg,) = args
+        return diagram.transform(arg, f"→ {self.handle_return()[0].python_type}")
 
     def generate_handle_ir(self, flow: PythonControlFlow, args: Sequence[IRValue]) -> IRValue:
         arg_type: PyObjectType
@@ -379,6 +389,10 @@ class BooleanResultHandle(Handle[PythonControlFlow]):
 
     def __str__(self) -> str:
         return f"BooleanResult({self.__arg}) → bool"
+
+    def generate_handle_diagram(self, diagram: DiagramState, args: Sequence[str]) -> str:
+        (arg,) = args
+        return diagram.transform(arg, 'Result → Boolean')
 
     def generate_handle_ir(self, flow: PythonControlFlow, args: Sequence[IRValue]) -> IRValue:
         (result,) = args
@@ -601,6 +615,10 @@ class NullToNone(BaseTransferUnaryHandle[PythonControlFlow]):
         t = ty if isinstance(ty, PyObjectType) else PyObjectType(ty)
         super().__init__(t, t, transfer)
 
+    def generate_handle_diagram(self, diagram: DiagramState, args: Sequence[str]) -> str:
+        (arg,) = args
+        return diagram.transform(arg, 'Null → None')
+
     def generate_handle_ir(self, flow: F, args: Sequence[IRValue]) -> IRValue:
         (arg,) = args
         (ty, _) = self.handle_return()
@@ -677,6 +695,9 @@ class WithGlobalInterpreterLock(Handle[PythonControlFlow]):
     def __str__(self) -> str:
         return f"WithGIL[{self.__handle}]"
 
+    def generate_handle_diagram(self, diagram: DiagramState, args: Sequence[str]) -> str:
+        return diagram.wrap(self.__handle, args)
+
     def generate_handle_ir(self, flow: F, args: Sequence[IRValue]) -> IRValue:
         state = flow.builder.call(flow.use_native_function("PyGILState_Ensure", INT_RESULT_TYPE, ()))
         release = flow.use_native_function("PyGILState_Release", llvmlite.ir.VoidType(), (INT_RESULT_TYPE,))
@@ -702,6 +723,9 @@ class WithoutGlobalInterpreterLock(Handle[PythonControlFlow]):
 
     def __str__(self) -> str:
         return f"WithoutGIL[{self.__handle}]"
+
+    def generate_handle_diagram(self, diagram: DiagramState, args: Sequence[str]) -> str:
+        return diagram.wrap(self.__handle, args)
 
     def generate_handle_ir(self, flow: F, args: Sequence[IRValue]) -> IRValue:
         thread_state_type = llvmlite.ir.IntType(8).as_pointer()
