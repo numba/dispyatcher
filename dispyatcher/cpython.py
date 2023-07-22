@@ -118,7 +118,7 @@ class PyObjectType(Type):
         self.__type = ty
 
     def __str__(self) -> str:
-        return f"PyObject({repr(self.__type)})"
+        return f"PyObject({self.__type.__name__})"
 
     @property
     def python_type(self) -> type:
@@ -336,8 +336,9 @@ class CheckedCast(BaseTransferUnaryHandle[PythonControlFlow]):
         """
         super().__init__(PyObjectType(ret), PyObjectType(arg), transfer)
 
-    def __str__(self) -> str:
-        return f"CheckedCast({self.__arg}) → {self.__ret}"
+    def _name(self) -> str:
+        return "CheckedCast"
+
 
     def generate_handle_ir(self, flow: PythonControlFlow, args: Sequence[IRValue]) -> IRValue:
         arg_type: PyObjectType
