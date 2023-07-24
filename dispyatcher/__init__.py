@@ -303,7 +303,7 @@ class FlowState:
     """
     __arguments: Set[int]
     __builder: IRBuilder
-    __global_addresses: Dict[str, ctypes.c_char_p]
+    __global_addresses: Dict[str, ctypes.c_size_t]
     __library_dependencies: Set[str]
     __dependencies: Dict[int, Tuple[Set[int], IRValue, Optional[Type]]]
     __next_lifetime: int
@@ -311,7 +311,7 @@ class FlowState:
     def __init__(self,
                  builder: IRBuilder,
                  dependencies: Union[int, Dict[int, Tuple[Set[int], IRValue, Optional[Type]]]],
-                 global_addresses: Dict[str, ctypes.c_char_p],
+                 global_addresses: Dict[str, ctypes.c_size_t],
                  library_dependencies: Set[str]):
         self.__arguments = set(range(dependencies)) if isinstance(dependencies, int)else set(dependencies.keys())
         self.__builder = builder
@@ -461,7 +461,7 @@ class FlowState:
             for dep in deps:
                 self.drop(dep)
 
-    def upsert_global_binding(self, name: str, ty: LLType, address: ctypes.c_char_p) -> IRValue:
+    def upsert_global_binding(self, name: str, ty: LLType, address: ctypes.c_size_t) -> IRValue:
         """
         Create a binding for a value.
 
@@ -479,8 +479,8 @@ class FlowState:
         if name in self.__builder.module.globals:
             return self.__builder.module.globals[name]
         else:
-            value = llvmlite.ir.GlobalVariable(self.__builder.module, ty.as_pointer(), name)
-            value.initializer = llvmlite.ir.Constant(ty.as_pointer(), llvmlite.ir.Undefined)
+            value = llvmlite.ir.GlobalVariable(self.__builder.module, ty, name)
+            value.initializer = llvmlite.ir.Constant(ty, llvmlite.ir.Undefined)
             self.__global_addresses[name] = address
             return value
 
@@ -674,7 +674,6 @@ class ControlFlow:
                             (f"Handle {caller} transfers argument {caller_arg} to handle {handle} for argument {index} "
                              " but doesn't own it")
                         self.builder.comment(f"Transferring {caller_arg} argument to {index} for {handle}...")
-                        self.__state.transfer(caller_arg_lifetimes[caller_arg])
                     callee_argument_lifetimes.append(None)
                 else:
                     combined_caller_lifetimes = set()
@@ -758,7 +757,7 @@ class ControlFlow:
         """
         self.__arg_lifetimes[-1][2].append(cleanup)
 
-    def upsert_global_binding(self, name: str, ty: LLType, address: ctypes.c_char_p) -> IRValue:
+    def upsert_global_binding(self, name: str, ty: LLType, address: ctypes.c_size_t) -> IRValue:
         """
         Create a binding for a value.
 
@@ -920,7 +919,8 @@ class DiagramState:
         (handle, name, node_colour) = self.__call_stack[-1]
         arg_labels = "|".join(f"<arg{idx}> {idx}: {graphviz.escape(str(ty))}"
                               for idx, (ty, _) in enumerate(handle.handle_arguments()))
-        self.__graph.node(node_id, graphviz.nohtml(f"{{{{{arg_labels}}} | {graphviz.escape(str(handle))} |<ret>{name}}}"),
+        self.__graph.node(node_id,
+                          graphviz.nohtml(f"{{{{{arg_labels}}} | {graphviz.escape(str(handle))} |<ret>{name}}}"),
                           shape="record",
                           style="filled",
                           fillcolor=node_colour)
@@ -1020,7 +1020,7 @@ class InvalidationListener:
         """
         pass
 
-    def invalidate_address(self, name: str, address: ctypes.c_char_p) -> None:
+    def invalidate_address(self, name: str, address: ctypes.c_size_t) -> None:
         """
         Trigger updating the address of a call site.
 
@@ -1050,7 +1050,7 @@ class InvalidationTarget(InvalidationListener):
         for listener in self.__listeners:
             listener.invalidate()
 
-    def invalidate_address(self, name: str, address: ctypes.c_char_p) -> None:
+    def invalidate_address(self, name: str, address: ctypes.c_size_t) -> None:
         """
         Trigger invalidation of the address of a call site and propagate that to its listeners.
 
@@ -1270,14 +1270,14 @@ class CallSite(Handle):
 
     Callsites can also be used as handles in other callsites and independently updated.
     """
-    __address: ctypes.c_char_p
+    __address: ctypes.c_size_t
     __engine: Optional[llvmlite.binding.ResourceTracker]
     __epoch: int
     __flow_type: ControlFlowType
     __func: Callable[..., Any]
     __handle: Handle[F]
     __id: str
-    __other_sites: Dict[str, ctypes.c_char_p]
+    __other_sites: Dict[str, ctypes.POINTER(ctypes.c_size_t)]
     __type: llvmlite.ir.FunctionType
     llvm_ir: str
 
@@ -1307,7 +1307,7 @@ class CallSite(Handle):
         self.invalidate()
 
     @property
-    def address(self) -> ctypes.c_char_p:
+    def address(self) -> ctypes.c_size_t:
         """
         The address of the compiled version of the callsite (*i.e.*, the function pointer that references inside the
         callsite.
@@ -1371,20 +1371,20 @@ class CallSite(Handle):
         for library_dependency in library_dependencies:
             builder.add_jit_library(library_dependency)
         self.__engine = builder.link(lljit_instance, f"{self.__id}_{self.__epoch}")
-        self.__address = ctypes.c_char_p(self.__engine["call_site"])
+        self.__address = ctypes.c_size_t(self.__engine["call_site"])
         self.__other_sites = {name: ctypes.cast(self.__engine[name],
-                                                ctypes.POINTER(ctypes.c_char_p)) for name in global_addresses.keys()}
+                                                ctypes.POINTER(ctypes.c_size_t)) for name in global_addresses.keys()}
         for name, address in global_addresses.items():
-            ctypes.memmove(self.__other_sites[name], ctypes.addressof(address), ctypes.sizeof(ctypes.c_char_p))
+            ctypes.memmove(self.__other_sites[name], ctypes.addressof(address), ctypes.sizeof(ctypes.c_size_t))
         super().invalidate_address(self.__id, self.__address)
         self.__func = self.__flow_type.bridge_function(self.handle_return(),
                                                        self.handle_arguments(),
-                                                       ctypes.cast(self.__address, ctypes.c_void_p).value)
+                                                       self.__address.value)
 
-    def invalidate_address(self, name: str, address: ctypes.c_char_p):
+    def invalidate_address(self, name: str, address: ctypes.c_size_t):
         # Do not call super as any listeners will have a direct reference to this address if they need it
         if name in self.__other_sites:
-            ctypes.memmove(self.__other_sites[name], ctypes.addressof(address), ctypes.sizeof(ctypes.c_char_p))
+            ctypes.memmove(self.__other_sites[name], ctypes.addressof(address), ctypes.sizeof(ctypes.c_size_t))
 
     def handle_arguments(self) -> Sequence[Tuple[Type, ArgumentManagement]]:
         return self.__handle.handle_arguments()
@@ -1393,7 +1393,7 @@ class CallSite(Handle):
         return self.__handle.handle_return()
 
     def generate_handle_ir(self, flow: F, args: Sequence[IRValue]) -> IRValue:
-        value = flow.upsert_global_binding(self.__id, self.__type, self.__address)
+        value = flow.upsert_global_binding(self.__id, self.__type.as_pointer(), self.__address)
         return flow.builder.call(flow.builder.load(value), args)
 
     def show_diagram(self) -> DiagramState:

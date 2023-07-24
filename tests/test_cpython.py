@@ -59,9 +59,17 @@ class PythonFlowTests(unittest.TestCase):
             callsite(ctypes.py_object({"a": 1}), ctypes.py_object("b"))
 
     def test_value(self):
-        self_handle = dispyatcher.cpython.Value(self, transfer=dispyatcher.ReturnManagement.TRANSFER)
+        self_handle = dispyatcher.cpython.Value(self) + dispyatcher.Clone
         callsite = CallSite(self_handle, PythonControlFlowType())
         self.assertEqual(self, callsite())
+
+    def test_checked_cast(self):
+        handle = Identity(dispyatcher.cpython.PyObjectType(object)) // dispyatcher.cpython.PyObjectType(dict)
+        callsite = CallSite(handle + dispyatcher.Clone, PythonControlFlowType())
+        d = {"a": 1}
+        self.assertEqual(callsite(ctypes.py_object(d)), d)
+        with self.assertRaises(TypeError):
+            callsite(ctypes.py_object([]))
 
     def test_array_collection(self):
         # This is really an allocation test, but we use Python infrastructure to make it pleasant

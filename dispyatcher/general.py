@@ -371,7 +371,7 @@ class BaseIndirectFunction(BaseExistingFunction):
         fn_type = llvmlite.ir.FunctionType(return_type, argument_types)
         return flow.upsert_global_binding(fn_name, fn_type, self._address())
 
-    def _address(self) -> ctypes.c_char_p:
+    def _address(self) -> ctypes.c_size_t:
         """
         The current address of the function.
 

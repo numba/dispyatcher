@@ -18,6 +18,14 @@ SIZE_T_TYPE = llvmlite.ir.types.IntType(ctypes.sizeof(ctypes.c_size_t) * 8)
 CHAR_ARRAY = UncheckedArray(MachineType(llvmlite.ir.IntType(8)))
 
 
+def _ptr_to_obj(value: Any) -> ctypes.c_size_t:
+    import platform
+    assert platform.python_implementation() == "CPython", \
+        "This feature only works on CPython because there's no universal way to get the address of an object."
+    # We rely on id to return the pointer to an object, which is a problem.
+    return ctypes.c_size_t(id(value))
+
+
 class PythonControlFlow(dispyatcher.ControlFlow):
     """
     A control flow that knows how to generate Python exceptions
@@ -287,8 +295,8 @@ class CFunctionHandle(BaseIndirectFunction):
         super().__init__(return_type, return_transfer, *args)
         self.__cfunc = cfunc
 
-    def _address(self) -> ctypes.c_char_p:
-        return ctypes.c_char_p.from_address(ctypes.addressof(self.__cfunc))
+    def _address(self) -> ctypes.c_size_t:
+        return ctypes.c_size_t(ctypes.addressof(self.__cfunc))
 
     def _name(self) -> str:
         return str(self.__cfunc)
@@ -316,7 +324,7 @@ class ThrowIfNull(BaseTransferUnaryHandle[PythonControlFlow]):
 
     def generate_handle_diagram(self, diagram: DiagramState, args: Sequence[str]) -> str:
         (arg,) = args
-        return diagram.transform(arg, f"Throw If Null")
+        return diagram.transform(arg, "Throw If Null")
 
     def generate_handle_ir(self, flow: F, args: Sequence[IRValue]) -> IRValue:
         (value, ) = args
@@ -362,17 +370,18 @@ class CheckedCast(BaseTransferUnaryHandle[PythonControlFlow]):
         (arg,) = args
         (ret_type, _) = self.handle_return()
         (arg_type, _), = self.handle_arguments()
-        py_type = ctypes.addressof(ctypes.py_object(ret_type.python_type))
+
         return_type = flow.upsert_global_binding(flow.builder.module.get_unique_name("checked_cast"),
                                                  PY_OBJECT_TYPE.machine_type(),
-                                                 ctypes.c_char_p.from_address(py_type))
+                                                 _ptr_to_obj(ret_type.python_type))
         check = flow.use_native_function("PyObject_IsInstance",
                                          INT_RESULT_TYPE,
                                          (PY_OBJECT_TYPE.machine_type(), PY_OBJECT_TYPE.machine_type()))
-        flow.check_return_code(flow.builder.call(flow.builder.load(check), (arg, return_type)),
+        msg = f"Value of type {arg_type.python_type.__qualname__} cannot be cast to {ret_type.python_type.__qualname__}"
+        flow.check_return_code(flow.builder.call(check, (arg, flow.builder.load(return_type))),
                                1,
                                "TypeError",
-                               f"Value of type {arg_type.python_type} cannot be cast to {ret_type.python_type}.")
+                               msg)
         return arg
 
 
@@ -749,15 +758,14 @@ class WithoutGlobalInterpreterLock(Handle[PythonControlFlow]):
 
 class Value(Handle[PythonControlFlow]):
     """
-    A handle that returns a Python object
+    A handle that returns a reference to a Python object
     """
-    __value: ctypes.py_object
     __type: type
-    __transfer: ReturnManagement
+    __value: Any
 
-    def __init__(self, value: Any,
-                 ty: Union[type, PyObjectType, None] = None,
-                 transfer: ReturnManagement = ReturnManagement.BORROW):
+    def __init__(self,
+                 value: Any,
+                 ty: Union[type, PyObjectType, None] = None):
         """
         Creates a new handle that returns an updatable Python object
 
@@ -765,8 +773,6 @@ class Value(Handle[PythonControlFlow]):
         :param ty: the Python type the handle will return. This can be explicitly provided as a Python type or a
             ``PyObjectType`` or it can be automatically inferred from the value provided (``None``). Note that the value
             must be an instance of this type.
-        :param transfer: whether to return a borrowed or transferred instance of the object. Note that transferring does
-            not remove the value from this handle; it increments the reference count on the object and returns that.
         """
         super().__init__()
         if ty is None:
@@ -778,8 +784,7 @@ class Value(Handle[PythonControlFlow]):
         else:
             raise TypeError(f"Cannot create handle for type {ty}.")
         assert isinstance(value, self.__type), f"Value {value} is not of type {self.__type}"
-        self.__transfer = transfer
-        self.__value = ctypes.py_object(value)
+        self.__value = value
 
     @property
     def value(self) -> Any:
@@ -788,28 +793,23 @@ class Value(Handle[PythonControlFlow]):
     @value.setter
     def value(self, value) -> None:
         assert isinstance(value, self.__type), f"Value {value} is not of type {self.__type}"
-        self.__value = ctypes.py_object(value)
-        self.invalidate_address(f"value_{id(self)}", ctypes.c_char_p.from_address(ctypes.addressof(self.__value)))
+        self.__value = value
+        self.invalidate_address(f"value_{id(self)}", _ptr_to_obj(self.__value))
 
     def __str__(self) -> str:
-        return f"Value[{self.__transfer.name}]({repr(self.__value)}) → {self.__type}"
+        return f"Value({repr(self.__value)}) → {self.__type}"
 
     def generate_handle_ir(self, flow: F, args: Sequence[IRValue]) -> IRValue:
         global_value = flow.upsert_global_binding(f"value_{id(self)}",
-                                                  PY_OBJECT_TYPE.machine_type().pointee,
-                                                  ctypes.c_char_p.from_address(ctypes.addressof(self.__value)))
-        result = flow.builder.load(global_value)
-        print(result, global_value)
-        if self.__transfer == ReturnManagement.TRANSFER:
-            inc_ref = flow.use_native_function("Py_IncRef", llvmlite.ir.VoidType(), (PY_OBJECT_TYPE.machine_type(),))
-            flow.builder.call(inc_ref, (result,))
-        return result
+                                                  PY_OBJECT_TYPE.machine_type(),
+                                                  _ptr_to_obj(self.__value))
+        return flow.builder.load(global_value)
 
     def handle_arguments(self) -> Sequence[Tuple[Type, ArgumentManagement]]:
         return ()
 
     def handle_return(self) -> Tuple[Type, ReturnManagement]:
-        return PyObjectType(self.__type), self.__transfer
+        return PyObjectType(self.__type), ReturnManagement.BORROW
 
 
 PY_DICT_NEW = CurrentProcessFunction(PY_DICT_TYPE, ReturnManagement.TRANSFER, "PyDict_New")
