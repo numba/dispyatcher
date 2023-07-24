@@ -41,9 +41,9 @@ class PythonControlFlow(dispyatcher.ControlFlow):
         fail_block = self.builder.append_basic_block("result_fail")
         ok_block = self.builder.append_basic_block("result_ok")
         exception_block = self.builder.append_basic_block("result_exception")
-        self.builder.switch(result, fail_block)\
-            .add_case(llvmlite.ir.Constant(INT_RESULT_TYPE, ok_value), ok_block)\
-            .add_case(llvmlite.ir.Constant(INT_RESULT_TYPE, -1), exception_block)
+        switch = self.builder.switch(result, fail_block)
+        switch.add_case(llvmlite.ir.Constant(INT_RESULT_TYPE, ok_value), ok_block)
+        switch.add_case(llvmlite.ir.Constant(INT_RESULT_TYPE, -1), exception_block)
 
         self.builder.position_at_start(fail_block)
         self.throw_exception(error, message)
@@ -117,6 +117,12 @@ class PyObjectType(Type):
         assert isinstance(ty, type), f"Expected type but got {ty}"
         self.__type = ty
 
+    def __eq__(self, o: object) -> bool:
+        if isinstance(o, PyObjectType):
+            return self.__type == o.__type
+        else:
+            return False
+
     def __str__(self) -> str:
         return f"PyObject({self.__type.__name__})"
 
@@ -159,7 +165,7 @@ class PyObjectType(Type):
 
     def into_type(self, target: Type) -> Union[Handle, None]:
         if isinstance(target, PyObjectType):
-            if issubclass(target.__type, self.__type):
+            if issubclass(self.__type, target.__type):
                 return Identity(target, self)
             else:
                 return CheckedCast(self.__type, target.__type)
