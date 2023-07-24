@@ -601,7 +601,12 @@ class ControlFlow:
     that doesn't throw in a callsite that handles a throw.
     """
     __state: FlowState
-    __arg_lifetimes: List[Tuple["Handle", List[Optional[Set[int]]], List[Callable[[], None]]]]
+    # The ar lifetimes are:
+    # - the calling handle
+    # - the argument lifetimes: True is value is owned and not transferred yet, False if transferred, otherwise a set of
+    #                           lifetime identifiers
+    # - a list of clean up callbacks
+    __arg_lifetimes: List[Tuple["Handle", List[Union[bool, Set[int]]], List[Callable[[], None]]]]
 
     def __init__(self, state: FlowState):
         self.__state = state
@@ -653,6 +658,7 @@ class ControlFlow:
         callee_argument_lifetimes = []
         values = []
         self.builder.comment(f"Preparing arguments for {handle}...")
+        lifetimes_to_check = set()
         for index, (arg, (arg_type, arg_management)) in enumerate(zip(args, callee_argument_info)):
             if isinstance(arg, TemporaryValue):
                 values.append(arg.ir_value)
@@ -660,9 +666,9 @@ class ControlFlow:
                                       ArgumentManagement.TRANSFER_CAPTURE_PARENTS):
                     self.builder.comment(f"Transferring argument {index} for {handle}...")
                     arg.transfer()
-                    callee_argument_lifetimes.append(None)
+                    callee_argument_lifetimes.append(True)
                 else:
-                    arg.check_read()
+                    lifetimes_to_check.add(arg.lifetime)
                     callee_argument_lifetimes.append({arg.lifetime})
             else:
                 (value, caller_args) = arg
@@ -670,11 +676,12 @@ class ControlFlow:
                 if arg_management in (ArgumentManagement.TRANSFER_TRANSIENT,
                                       ArgumentManagement.TRANSFER_CAPTURE_PARENTS):
                     for caller_arg in caller_args:
-                        assert caller_arg_lifetimes[caller_arg] is None,\
+                        assert caller_arg_lifetimes[caller_arg] is True,\
                             (f"Handle {caller} transfers argument {caller_arg} to handle {handle} for argument {index} "
-                             " but doesn't own it")
+                             " but doesn't own it (any longer)")
                         self.builder.comment(f"Transferring {caller_arg} argument to {index} for {handle}...")
-                    callee_argument_lifetimes.append(None)
+                        caller_arg_lifetimes[caller_arg] = False
+                    callee_argument_lifetimes.append(True)
                 else:
                     combined_caller_lifetimes = set()
                     for caller_arg in caller_args:
@@ -685,12 +692,16 @@ class ControlFlow:
                             capture_parents = caller_arg_management in (ArgumentManagement.TRANSFER_CAPTURE_PARENTS,
                                                                         ArgumentManagement.BORROW_CAPTURE_PARENTS)
                             for lifetime in lifetimes_for_arg:
-                                self.__state.check_read(lifetime)
+                                lifetimes_to_check.add(lifetime)
                                 if lifetime not in argument_lifetime_mapping:
                                     argument_lifetime_mapping[lifetime] = capture_parents
                                 else:
                                     argument_lifetime_mapping[lifetime] &= capture_parents
                     callee_argument_lifetimes.append(combined_caller_lifetimes)
+        # We delay checking all the lifetimes until after the transfers are done. This avoids the situation where a
+        # handle borrows and then transfers the same value
+        for lifetime in lifetimes_to_check:
+            self.__state.check_read(lifetime)
         self.__arg_lifetimes.append((handle, callee_argument_lifetimes, []))
         self.builder.comment(f"Calling {handle}...")
         value = handle.generate_handle_ir(self, values)
