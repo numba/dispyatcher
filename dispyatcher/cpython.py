@@ -260,7 +260,7 @@ class CheckAndUnwind(Handle[PythonControlFlow]):
                                                 PY_OBJECT_TYPE.machine_type()(None))
         fail_block = flow.builder.append_basic_block('check_failed')
         success_block = flow.builder.append_basic_block('check_ok')
-        flow.builder.cbranch(comparison, fail_block, success_block)
+        flow.builder.cbranch(comparison, success_block, fail_block)
         flow.builder.position_at_start(fail_block)
         flow.unwind()
         flow.builder.position_at_start(success_block)
@@ -851,7 +851,7 @@ def callback(return_type: Type, *arguments: Type) -> Callable[[Callable], Handle
         def _address(self) -> ctypes.c_size_t:
             return ctypes.c_size_t(ctypes.cast(self.__func, ctypes.c_void_p).value)
 
-    return CallbackHandle
+    return lambda function: CallbackHandle(function) @ CheckAndUnwind
 
 
 PY_DICT_NEW = CurrentProcessFunction(PY_DICT_TYPE, ReturnManagement.TRANSFER, "PyDict_New")
