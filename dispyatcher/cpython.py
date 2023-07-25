@@ -906,6 +906,12 @@ PY_OBJECT_GET_ATTR_STRING = CurrentProcessFunction(PY_OBJECT_TYPE,
                                                    (PY_OBJECT_TYPE, ArgumentManagement.BORROW_TRANSIENT),
                                                    (CHAR_ARRAY_TYPE, ArgumentManagement.BORROW_TRANSIENT))
 
+PY_OBJECT_GET_ITEM = CurrentProcessFunction(PY_OBJECT_TYPE,
+                                            ReturnManagement.TRANSFER,
+                                            "PyObject_GetItem",
+                                            (PY_OBJECT_TYPE, ArgumentManagement.BORROW_TRANSIENT),
+                                            (PY_OBJECT_TYPE, ArgumentManagement.BORROW_TRANSIENT))
+
 PY_FLOAT_AS_DOUBLE = CurrentProcessFunction(MachineType(llvmlite.ir.DoubleType()),
                                             ReturnManagement.TRANSFER,
                                             "PyFloat_AsDouble",
