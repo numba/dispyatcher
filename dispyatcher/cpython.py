@@ -349,14 +349,20 @@ class CheckedCast(BaseTransferUnaryHandle[PythonControlFlow]):
     This is meant to be a type assertion. It's named for the JVM ``CHECKEDCAST`` instruction, which Python doesn't have.
     """
 
-    def __init__(self, arg: type, ret: type, transfer: ReturnManagement = ReturnManagement.BORROW):
+    def __init__(self,
+                 arg: Union[type, PyObjectType],
+                 ret: Union[type, PyObjectType],
+                 transfer: ReturnManagement = ReturnManagement.BORROW):
         """
         Create a new check handle.
 
         :param arg: the argument type as a Python type (not a dispyatcher or LLVM type)
         :param ret: the return type as a Python type (not a dispyatcher or LLVM type)
         """
-        super().__init__(PyObjectType(ret), PyObjectType(arg), transfer)
+        super().__init__(
+            PyObjectType(ret) if isinstance(ret, type) else ret,
+            PyObjectType(arg) if isinstance(arg, type) else arg,
+            transfer)
 
     def _name(self) -> str:
         return "CheckedCast"
