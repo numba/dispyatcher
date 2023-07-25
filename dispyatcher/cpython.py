@@ -15,7 +15,7 @@ from dispyatcher.repacking import Repacker, RepackingDispatcher, RepackingState
 
 INT_RESULT_TYPE = llvmlite.ir.types.IntType(ctypes.sizeof(ctypes.c_int) * 8)
 SIZE_T_TYPE = llvmlite.ir.types.IntType(ctypes.sizeof(ctypes.c_size_t) * 8)
-CHAR_ARRAY = UncheckedArray(MachineType(llvmlite.ir.IntType(8)))
+CHAR_ARRAY_TYPE = UncheckedArray(MachineType(llvmlite.ir.IntType(8)))
 
 
 def _ptr_to_obj(value: Any) -> ctypes.c_size_t:
@@ -877,7 +877,7 @@ PY_DICT_GET_ITEM_STRING = CurrentProcessFunction(PY_OBJECT_TYPE,
                                                  ReturnManagement.BORROW,
                                                  "PyDict_GetItemString",
                                                  (PY_DICT_TYPE, ArgumentManagement.BORROW_CAPTURE),
-                                                 (CHAR_ARRAY, ArgumentManagement.BORROW_TRANSIENT))
+                                                 (CHAR_ARRAY_TYPE, ArgumentManagement.BORROW_TRANSIENT))
 PY_DICT_SIZE = CurrentProcessFunction(MachineType(SIZE_T_TYPE),
                                       ReturnManagement.TRANSFER,
                                       "PyDict_Size",
@@ -885,7 +885,7 @@ PY_DICT_SIZE = CurrentProcessFunction(MachineType(SIZE_T_TYPE),
 PY_UNICODE_FROM_STRING = CurrentProcessFunction(PyObjectType(str),
                                                 ReturnManagement.TRANSFER,
                                                 "PyUnicode_FromString",
-                                                (CHAR_ARRAY, ArgumentManagement.BORROW_TRANSIENT))
+                                                (CHAR_ARRAY_TYPE, ArgumentManagement.BORROW_TRANSIENT))
 
 PY_OBJECT_GET_ATTR = CurrentProcessFunction(PY_OBJECT_TYPE,
                                             ReturnManagement.TRANSFER,
@@ -897,7 +897,7 @@ PY_OBJECT_GET_ATTR_STRING = CurrentProcessFunction(PY_OBJECT_TYPE,
                                                    ReturnManagement.TRANSFER,
                                                    "PyObject_GetAttrString",
                                                    (PY_OBJECT_TYPE, ArgumentManagement.BORROW_TRANSIENT),
-                                                   (CHAR_ARRAY, ArgumentManagement.BORROW_TRANSIENT))
+                                                   (CHAR_ARRAY_TYPE, ArgumentManagement.BORROW_TRANSIENT))
 
 PY_FLOAT_AS_DOUBLE = CurrentProcessFunction(MachineType(llvmlite.ir.DoubleType()),
                                             ReturnManagement.TRANSFER,
