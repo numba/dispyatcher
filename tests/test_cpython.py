@@ -77,3 +77,8 @@ class PythonFlowTests(unittest.TestCase):
         handle = CollectIntoArray(i8, 2, null_terminated=True) + dispyatcher.cpython.PY_UNICODE_FROM_STRING
         callsite = CallSite(handle, PythonControlFlowType())
         self.assertEqual(callsite(ord('h'), ord('i')), "hi")
+
+    def test_string(self):
+        callsite = dispyatcher.CallSite(dispyatcher.general.NullTerminatedString("Hi")
+                                        + dispyatcher.cpython.PY_UNICODE_FROM_STRING)
+        self.assertEqual(callsite(), "Hi")

@@ -265,6 +265,45 @@ class ForceConversion(BaseTransferUnaryHandle[ControlFlow]):
         return arg
 
 
+class NullTerminatedString(Handle[ControlFlow]):
+    """
+    A handle that returns a constant C-style null-terminated string
+    """
+    __value: str
+
+    def __init__(self, value: str):
+        super().__init__()
+        self.__value = str(value)
+
+    def __str__(self) -> str:
+        return f"Constant[{repr(self.__value)}]"
+
+    @property
+    def value(self) -> str:
+        return self.__value
+
+    @value.setter
+    def value(self, value: str):
+        self.__value = str(value)
+        self.invalidate()
+
+    def generate_handle_ir(self, flow: ControlFlow, args: Sequence[IRValue]) -> Union[TemporaryValue, IRValue]:
+        i8 = llvmlite.ir.IntType(8)
+        str_bytes = self.__value.encode("utf-8") + b"\x00"
+        str_const = llvmlite.ir.Constant(llvmlite.ir.ArrayType(i8, len(str_bytes)), bytearray(str_bytes))
+        str_global = llvmlite.ir.GlobalVariable(flow.builder.module, str_const.type,
+                                                flow.builder.module.get_unique_name("tuple_format"))
+        str_global.initializer = str_const
+        str_global.global_constant = True
+        return flow.builder.bitcast(str_global, i8.as_pointer())
+
+    def handle_arguments(self) -> Sequence[Tuple[Type, ArgumentManagement]]:
+        return ()
+
+    def handle_return(self) -> Tuple[Type, ReturnManagement]:
+        return UncheckedArray(MachineType(llvmlite.ir.IntType(8))), ReturnManagement.BORROW
+
+
 class SimpleConstant(Handle[ControlFlow]):
     """
     A handle that returns a constant value
