@@ -36,6 +36,11 @@ Handles can be composed using the ``+`` operator. This assumes the second handle
 
 Some of these operations are generic over the type they support. For instance, ``Clone`` creates a copy of a value and works over any type. These can be used directly in a ``+`` operation and will be called with the first argument as the return type of the left hand argument. That is: ``Identity(ty) + Clone`` is short-hand for ``Identity(ty) + Clone(ty)``. Sometimes additional information is require, so a tuple can be used: ``handle + (GetElementPointer, 3)``
 
+Handles can also be composed with the ``<<`` operator. It functions in two modes:
+
+* ``x << (3, y)`` will bind the 4th argument of handle ``x`` with with result of handle ``y``
+* ``x << (a, None, b)`` will bind the 1st argument of handle ``x`` with the result of handle ``a``, and the 3rd argument with the result of the handle ``b``. The 2nd argument is left untouched as ``None`` is provided. This mode does not require the provided tuple being the full length of handle ``x``'s argument list.
+
 Rarely, operations need to swallow a whole other handle. For instance, the ``WithoutGIL`` operation wraps another handle and ensures everything that handle executes happens without the Python GIL being held. The ``@`` operator can be used for that: ``handle @ WithoutGIL`` is short of ``WithoutGIL(handle)``.
 
 These operators are provided to allow something that looks like a chain of wrapping operations.

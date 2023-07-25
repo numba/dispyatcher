@@ -1127,7 +1127,7 @@ class Handle(InvalidationTarget, Generic[F]):
     global state is acceptable, if explicitly desired.
     """
 
-    def __add__(self, other):
+    def __add__(self, other) -> "Handle":
         if isinstance(other, Handle):
             return PreprocessArgument(other, 0, self)
         elif callable(other):
@@ -1137,7 +1137,7 @@ class Handle(InvalidationTarget, Generic[F]):
         else:
             raise TypeError(f"Unsupported operand type for +: {type(other)}")
 
-    def __floordiv__(self, other):
+    def __floordiv__(self, other) -> "Handle":
         if isinstance(other, Type):
             (ret_type, ret_management) = self.handle_return()
             if ret_type == other:
@@ -1149,7 +1149,26 @@ class Handle(InvalidationTarget, Generic[F]):
         else:
             raise TypeError(f"Unsupported operand type for //: {type(other)}")
 
-    def __truediv__(self, other):
+    def __lshift__(self, other) -> "Handle":
+        if isinstance(other, Handle):
+            return PreprocessArgument(self, 0, other)
+        elif isinstance(other, tuple):
+            if len(other) == 2 and isinstance(other[0], int) and isinstance(other[1], Handle):
+                return PreprocessArgument(self, other[0], other[1])
+
+            result = self
+            for index, handle in reversed(list(enumerate(other))):
+                if handle is None:
+                    continue
+                elif isinstance(handle, Handle):
+                    result = PreprocessArgument(result, index, handle)
+                else:
+                    raise TypeError(f"Unsupported type for at {index} for <<: {type(handle)}")
+            return result
+        else:
+            raise TypeError(f"Unsupported operand type for <<: {type(other)}")
+
+    def __truediv__(self, other) -> "Handle":
         output = self
         args = self.handle_arguments()
         assert len(args) == len(other), f"Handle takes {len(args)}, but {len(other)} provided by cast."
