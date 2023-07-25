@@ -296,7 +296,7 @@ class CFunctionHandle(BaseIndirectFunction):
         self.__cfunc = cfunc
 
     def _address(self) -> ctypes.c_size_t:
-        return ctypes.c_size_t(ctypes.addressof(self.__cfunc))
+        return ctypes.c_size_t(ctypes.cast(self.__cfunc, ctypes.c_void_p).value)
 
     def _name(self) -> str:
         return str(self.__cfunc)
@@ -812,6 +812,37 @@ class Value(Handle[PythonControlFlow]):
         return PyObjectType(self.__type), ReturnManagement.BORROW
 
 
+def callback(return_type: Type, *arguments: Type) -> Callable[[Callable], Handle[PythonControlFlow]]:
+    """
+    Generates a constructor for callbacks of a certain type.
+
+    This allows exporting a Python function as a handle. It assumes the handle will be invoked within a Python control
+    flow.
+
+    :param return_type: the return type of the function
+    :param arguments:
+    :return:
+    """
+    func_type = ctypes.PYFUNCTYPE(return_type.ctypes_type(), *(a.ctypes_type() for a in arguments))
+
+    class CallbackHandle(BaseIndirectFunction):
+        __func: func_type
+
+        def __init__(self, callback: Callable):
+            super().__init__(return_type,
+                             ReturnManagement.TRANSFER,
+                             *((a, ArgumentManagement.BORROW_TRANSIENT) for a in arguments))
+            self.__func = func_type(callback)
+
+        def _name(self) -> str:
+            return str(self.__func)
+
+        def _address(self) -> ctypes.c_size_t:
+            return ctypes.c_size_t(ctypes.cast(self.__func, ctypes.c_void_p).value)
+
+    return CallbackHandle
+
+
 PY_DICT_NEW = CurrentProcessFunction(PY_DICT_TYPE, ReturnManagement.TRANSFER, "PyDict_New")
 PY_DICT_CLEAR = CurrentProcessFunction(MachineType(llvmlite.ir.VoidType()),
                                        ReturnManagement.TRANSFER,
@@ -832,6 +863,11 @@ PY_DICT_GET_ITEM = CurrentProcessFunction(PY_OBJECT_TYPE,
                                           "PyDict_GetItem",
                                           (PY_DICT_TYPE, ArgumentManagement.BORROW_CAPTURE),
                                           (PY_OBJECT_TYPE, ArgumentManagement.BORROW_TRANSIENT))
+PY_DICT_GET_ITEM_STRING = CurrentProcessFunction(PY_OBJECT_TYPE,
+                                                 ReturnManagement.BORROW,
+                                                 "PyDict_GetItemString",
+                                                 (PY_DICT_TYPE, ArgumentManagement.BORROW_CAPTURE),
+                                                 (CHAR_ARRAY, ArgumentManagement.BORROW_TRANSIENT))
 PY_DICT_SIZE = CurrentProcessFunction(MachineType(SIZE_T_TYPE),
                                       ReturnManagement.TRANSFER,
                                       "PyDict_Size",

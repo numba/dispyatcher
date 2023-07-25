@@ -80,5 +80,19 @@ class PythonFlowTests(unittest.TestCase):
 
     def test_string(self):
         callsite = dispyatcher.CallSite(dispyatcher.general.NullTerminatedString("Hi")
-                                        + dispyatcher.cpython.PY_UNICODE_FROM_STRING)
+                                        + dispyatcher.cpython.PY_UNICODE_FROM_STRING,
+                                        PythonControlFlowType())
         self.assertEqual(callsite(), "Hi")
+
+    def test_callback(self):
+        i32 = MachineType(llvmlite.ir.IntType(32))
+        callback_generator = dispyatcher.cpython.callback(i32, PY_OBJECT_TYPE)
+        handle = (dispyatcher.PreprocessArgument(dispyatcher.cpython.PY_DICT_GET_ITEM_STRING
+                                                 + dispyatcher.cpython.ThrowIfNull,
+                                                 1,
+                                                 dispyatcher.general.NullTerminatedString("a"))
+                  + callback_generator(lambda x: len(x) * 2))
+        callsite = dispyatcher.CallSite(handle, PythonControlFlowType())
+        self.assertEqual(callsite({"a": []}), 0)
+        self.assertEqual(callsite({"a": [3]}), 2)
+        self.assertEqual(callsite({"a": "blah"}), 8)

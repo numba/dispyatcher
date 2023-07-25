@@ -408,7 +408,7 @@ class BaseIndirectFunction(BaseExistingFunction):
                         arguments: Sequence[IRValue]) -> IRValue:
         fn_name = flow.builder.module.get_unique_name("indirect")
         fn_type = llvmlite.ir.FunctionType(return_type, argument_types)
-        return flow.upsert_global_binding(fn_name, fn_type, self._address())
+        return flow.builder.load(flow.upsert_global_binding(fn_name, fn_type.as_pointer(), self._address()))
 
     def _address(self) -> ctypes.c_size_t:
         """
