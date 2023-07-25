@@ -42,6 +42,18 @@ These operators are provided to allow something that looks like a chain of wrapp
 
 Once a handle is constructed, creating a ``Callsite`` will compile it and turn it into a callable object. The control flow can choose the exact semantics for calling the handle. The infallible control flow uses a standard Python ``CFUNC`` while the Python control flow uses ``PYFUNC``.
 
+
+==============
+Debugging Tips
+==============
+
+The ``DISPYATCHER_DEBUG`` environment variable is a command separated list of debugging flags:
+
+* ``dump-ir`` causes the LLVM IR for each callsite to be display on standard output during compilation.
+* ``dump-gv`` causes a graph of the callsite to be written to disk. Every recompilation will trigger a new file to be generated.
+
+A graph of data flow can be produced for any handle or callsite by calling ``handle.show_graph()`` and the resulting graph can be displayed or saved using one of ``render``, ``render_and_load``, ``save``, or ``saves``.
+
 .. automodule:: dispyatcher
     :members:
 

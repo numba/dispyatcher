@@ -1,12 +1,27 @@
-import enum
-
 import ctypes
+import enum
 import graphviz
 import llvmlite.binding
 import llvmlite.ir
+import os
 import weakref
 from llvmlite.ir import Type as LLType, IRBuilder, Value as IRValue, PointerType
 from typing import Sequence, List, Dict, TypeVar, Generic, Tuple, Set, Optional, Union, Callable, Any
+
+_config = os.environ.get("DISPYATCHER_DEBUG", "").split(",")
+
+dump_ir = "dump-ir" in _config
+"""
+If set to true, or ``dump-ir`` is set in the environment variable ``DISPYATCHER_DEBUG``, all callsites will be printed
+to standard output on compilation
+"""
+
+dump_gv = "dump-gv" in _config
+"""
+If set to true, or ``dump-gv`` is set in the environment variable ``DISPYATCHER_DEBUG``, all callsites will generate a
+GraphViz graph on compilation and it will be written to a file. If the call site is recompiled, the next iteratio will
+be written to a different file.
+"""
 
 
 def llvm_type_to_ctype(ty: LLType):
@@ -1353,6 +1368,12 @@ class CallSite(Handle):
         return self.__func(*args, **kwargs)
 
     def invalidate(self):
+        self.__epoch += 1
+        unique_id = f"{self.__id}_{self.__epoch}"
+
+        if dump_gv:
+            DiagramState(self.__handle).save(unique_id + ".gv")
+
         # Do not call super as any listeners should not have to update if using a call site as a method handle
         machine_triple = llvmlite.binding.Target.from_default_triple()
         module = llvmlite.ir.Module()
@@ -1372,16 +1393,16 @@ class CallSite(Handle):
         module.functions.append(function)
 
         self.llvm_ir = str(module)
-        print(self.llvm_ir)
+        if dump_ir:
+            print(self.llvm_ir)
 
-        self.__epoch += 1
         builder = llvmlite.binding.JITLibraryBuilder().add_ir(self.llvm_ir).add_current_process().export_symbol(
             "call_site")
         for name in global_addresses.keys():
             builder.export_symbol(name)
         for library_dependency in library_dependencies:
             builder.add_jit_library(library_dependency)
-        self.__engine = builder.link(lljit_instance, f"{self.__id}_{self.__epoch}")
+        self.__engine = builder.link(lljit_instance, unique_id)
         self.__address = ctypes.c_size_t(self.__engine["call_site"])
         self.__other_sites = {name: ctypes.cast(self.__engine[name],
                                                 ctypes.POINTER(ctypes.c_size_t)) for name in global_addresses.keys()}
