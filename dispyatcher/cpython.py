@@ -1,5 +1,5 @@
 import ctypes
-from typing import Any, Callable, List, NamedTuple, Sequence, Set, Tuple, Union
+from typing import Any, Callable, List, NamedTuple, Sequence, Set, Tuple, Union, Optional
 
 import llvmlite.ir
 from llvmlite.ir import IRBuilder, Value as IRValue, Type as LLType
@@ -593,7 +593,7 @@ DOUBLE_TUPLE_ELEMENT = SimpleTupleElement("d", llvmlite.ir.DoubleType())
 PY_OBJECT_TUPLE_ELEMENT = SimpleTupleElement("O", PY_OBJECT_TYPE.machine_type())
 
 
-class _PyComplexType(Type, TupleElement):
+class _PyCComplexType(Type, TupleElement):
 
     def __str__(self) -> str:
         return "PyComplex"
@@ -622,6 +622,16 @@ class _PyComplexType(Type, TupleElement):
     def unpack(self, builder: IRBuilder) -> TupleArguments:
         alloc = builder.alloca(self.machine_type())
         return TupleArguments(unpack_args=(alloc,), call_args=lambda: (builder.load(alloc),))
+
+    def into_type(self, target) -> Optional["Handle"]:
+        if isinstance(target, PyObjectType) and isinstance(complex, target.python_type):
+            return PY_COMPLEX_FROM_C // target
+        return None
+
+    def from_type(self, source) -> Optional["Handle"]:
+        if isinstance(source, PyObjectType):
+            return PY_COMPLEX_TO_C / (source,)
+        return None
 
 
 class NullToNone(BaseTransferUnaryHandle[PythonControlFlow]):
@@ -660,18 +670,18 @@ class NullToNone(BaseTransferUnaryHandle[PythonControlFlow]):
         return "NullToNone"
 
 
-PY_COMPLEX_TYPE = _PyComplexType()
+PY_CCOMPLEX_TYPE = _PyCComplexType()
 """ The type for complex number """
 
 
-PY_COMPLEX_REAL = GetElementPointer(PY_COMPLEX_TYPE, 0,
-                                    dispyatcher.Pointer(MachineType(llvmlite.ir.DoubleType()))) + DerefPointer
-PY_COMPLEX_IMAG = GetElementPointer(PY_COMPLEX_TYPE, 1,
-                                    dispyatcher.Pointer(MachineType(llvmlite.ir.DoubleType()))) + DerefPointer
+PY_CCOMPLEX_REAL = GetElementPointer(PY_CCOMPLEX_TYPE, 0,
+                                     dispyatcher.Pointer(MachineType(llvmlite.ir.DoubleType())))
+PY_CCOMPLEX_IMAG = GetElementPointer(PY_CCOMPLEX_TYPE, 1,
+                                     dispyatcher.Pointer(MachineType(llvmlite.ir.DoubleType())))
 
 
 def implode_complex_number(handle: Handle, index: int) -> Handle:
-    return implode_args(handle, index, PY_COMPLEX_REAL, PY_COMPLEX_IMAG)
+    return implode_args(handle, index, PY_CCOMPLEX_REAL + DerefPointer, PY_CCOMPLEX_IMAG + DerefPointer)
 
 
 def find_unpack(ty: Type) -> TupleElement:
@@ -876,3 +886,47 @@ PY_UNICODE_FROM_STRING = CurrentProcessFunction(PyObjectType(str),
                                                 ReturnManagement.TRANSFER,
                                                 "PyUnicode_FromString",
                                                 (CHAR_ARRAY, ArgumentManagement.BORROW_TRANSIENT))
+
+PY_OBJECT_GET_ATTR = CurrentProcessFunction(PY_OBJECT_TYPE,
+                                            ReturnManagement.TRANSFER,
+                                            "PyObject_GetAttr",
+                                            (PY_OBJECT_TYPE, ArgumentManagement.BORROW_TRANSIENT),
+                                            (PY_OBJECT_TYPE, ArgumentManagement.BORROW_TRANSIENT))
+
+PY_OBJECT_GET_ATTR_STRING = CurrentProcessFunction(PY_OBJECT_TYPE,
+                                                   ReturnManagement.TRANSFER,
+                                                   "PyObject_GetAttrString",
+                                                   (PY_OBJECT_TYPE, ArgumentManagement.BORROW_TRANSIENT),
+                                                   (CHAR_ARRAY, ArgumentManagement.BORROW_TRANSIENT))
+
+PY_FLOAT_AS_DOUBLE = CurrentProcessFunction(MachineType(llvmlite.ir.DoubleType()),
+                                            ReturnManagement.TRANSFER,
+                                            "PyFloat_AsDouble",
+                                            (PY_OBJECT_TYPE, ArgumentManagement.BORROW_TRANSIENT)) @ CheckAndUnwind
+
+PY_LONG_AS_LONG = CurrentProcessFunction(MachineType(llvmlite.ir.IntType(ctypes.sizeof(ctypes.c_long) * 8)),
+                                         ReturnManagement.TRANSFER,
+                                         "PyLong_AsLong",
+                                         (PY_OBJECT_TYPE, ArgumentManagement.BORROW_TRANSIENT)) @ CheckAndUnwind
+
+PY_COMPLEX_REAL_AS_DOUBLE = CurrentProcessFunction(MachineType(llvmlite.ir.DoubleType()),
+                                                   ReturnManagement.TRANSFER,
+                                                   "PyComplex_RealAsDouble",
+                                                   (PyObjectType(complex), ArgumentManagement.BORROW_TRANSIENT))\
+                            @ CheckAndUnwind
+
+PY_COMPLEX_IMAG_AS_DOUBLE = CurrentProcessFunction(MachineType(llvmlite.ir.DoubleType()),
+                                                   ReturnManagement.TRANSFER,
+                                                   "PyComplex_ImagAsDouble",
+                                                   (PyObjectType(complex), ArgumentManagement.BORROW_TRANSIENT))\
+                            @ CheckAndUnwind
+
+PY_COMPLEX_TO_C = CurrentProcessFunction(PY_CCOMPLEX_TYPE,
+                                         ReturnManagement.TRANSFER,
+                                         "PyComplex_AsCComplex",
+                                         (PY_OBJECT_TYPE, ArgumentManagement.BORROW_TRANSIENT)) @ CheckAndUnwind
+
+PY_COMPLEX_FROM_C = CurrentProcessFunction(PyObjectType(complex),
+                                           ReturnManagement.TRANSFER,
+                                           "PyComplex_FromCComplex",
+                                           (PY_CCOMPLEX_TYPE, ArgumentManagement.BORROW_TRANSIENT))
