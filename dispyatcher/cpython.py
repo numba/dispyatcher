@@ -16,6 +16,7 @@ from dispyatcher.repacking import Repacker, RepackingDispatcher, RepackingState
 INT_RESULT_TYPE = llvmlite.ir.types.IntType(ctypes.sizeof(ctypes.c_int) * 8)
 SIZE_T_TYPE = llvmlite.ir.types.IntType(ctypes.sizeof(ctypes.c_size_t) * 8)
 CHAR_ARRAY_TYPE = UncheckedArray(MachineType(llvmlite.ir.IntType(8)))
+LONG_TYPE = MachineType(llvmlite.ir.IntType(ctypes.sizeof(ctypes.c_long) * 8))
 
 
 def _ptr_to_obj(value: Any) -> ctypes.c_size_t:
@@ -908,6 +909,11 @@ PY_LONG_AS_LONG = CurrentProcessFunction(MachineType(llvmlite.ir.IntType(ctypes.
                                          ReturnManagement.TRANSFER,
                                          "PyLong_AsLong",
                                          (PY_OBJECT_TYPE, ArgumentManagement.BORROW_TRANSIENT)) @ CheckAndUnwind
+
+PY_LONG_FROM_LONG = CurrentProcessFunction(PyObjectType(int),
+                                           ReturnManagement.TRANSFER,
+                                           "PyLong_AsLong",
+                                           (LONG_TYPE, ArgumentManagement.BORROW_TRANSIENT)) + ThrowIfNull
 
 PY_COMPLEX_REAL_AS_DOUBLE = CurrentProcessFunction(MachineType(llvmlite.ir.DoubleType()),
                                                    ReturnManagement.TRANSFER,
