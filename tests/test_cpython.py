@@ -94,3 +94,13 @@ class PythonFlowTests(unittest.TestCase):
         self.assertEqual(callsite({"a": []}), 0)
         self.assertEqual(callsite({"a": [3]}), 2)
         self.assertEqual(callsite({"a": "blah"}), 8)
+
+    def test_multi_unwind(self):
+        handle = (dispyatcher.cpython.PY_DICT_GET_ITEM + dispyatcher.cpython.ThrowIfNull) //\
+                 dispyatcher.cpython.PY_DICT_TYPE +\
+                 dispyatcher.cpython.PY_DICT_GET_ITEM +\
+                 dispyatcher.cpython.ThrowIfNull +\
+                 dispyatcher.Clone
+        callsite = CallSite(handle, PythonControlFlowType())
+        self.assertEqual(callsite({"a": {"b": 1}}, "a", "b"), 1)
+
