@@ -56,7 +56,7 @@ class PermuteArguments(Handle):
         return self.__handle.handle_return()
 
     def generate_handle_ir(self, flow: F, args: Sequence[IRValue]) -> Union[TemporaryValue, IRValue]:
-        call_args = [(arg, (idx,)) for arg, idx in enumerate(args)]
+        call_args = [(arg, (idx,)) for idx, arg in enumerate(args)]
         for permutation in self.__permutations:
             call_args = permutation.permute(call_args)
         return flow.call(self.__handle, call_args)
@@ -112,7 +112,7 @@ class ReverseArguments(ArgumentPermutation):
     Reverses all the arguments
     """
 
-    def check(self, arguments: Sequence[Type]) -> bool:
+    def check(self, arguments: Sequence[Tuple[Type, ArgumentManagement]]) -> bool:
         return True
 
     def permute(self, items: Sequence[T]) -> Sequence[T]:
@@ -146,7 +146,7 @@ class SwapArguments(ArgumentPermutation):
         self.__destination = destination
         self.__length = length
 
-    def check(self, arguments: Sequence[Type]) -> bool:
+    def check(self, arguments: Sequence[Tuple[Type, ArgumentManagement]]) -> bool:
         return self.__source + self.__length < len(arguments) and self.__destination + self.__length < len(arguments)
 
     def permute(self, items: Sequence[T]) -> Sequence[T]:
