@@ -837,8 +837,8 @@ def callback(return_type: Type, *arguments: Type) -> Callable[[Callable], Handle
     flow.
 
     :param return_type: the return type of the function
-    :param arguments:
-    :return:
+    :param arguments: the argument types of the function
+    :return: a constructor to wrap a Python function as a handle
     """
     func_type = ctypes.PYFUNCTYPE(return_type.ctypes_type(), *(a.ctypes_type() for a in arguments))
 
