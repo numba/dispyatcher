@@ -701,13 +701,17 @@ class ControlFlow:
                     callee_argument_lifetimes.append(set())
                     for caller_arg in caller_args:
                         lifetimes_for_arg = caller_arg_lifetimes[caller_arg]
-                        if lifetimes_for_arg:
+                        if isinstance(lifetimes_for_arg, set):
                             lifetimes_to_check.update(lifetimes_for_arg)
+                        else:
+                            assert lifetimes_for_arg is True, \
+                                (f"Handle {caller} transfers argument {caller_arg} to handle {handle} for argument"
+                                 f" {index}  but doesn't own it (any longer)")
                 else:
                     combined_caller_lifetimes = set()
                     for caller_arg in caller_args:
                         lifetimes_for_arg = caller_arg_lifetimes[caller_arg]
-                        if lifetimes_for_arg:
+                        if isinstance(lifetimes_for_arg, set):
                             combined_caller_lifetimes.update(lifetimes_for_arg)
                             (_, caller_arg_management) = caller_argument_info[caller_arg]
                             capture_parents = caller_arg_management in (ArgumentManagement.TRANSFER_CAPTURE_PARENTS,
@@ -718,6 +722,10 @@ class ControlFlow:
                                     argument_lifetime_mapping[lifetime] = capture_parents
                                 else:
                                     argument_lifetime_mapping[lifetime] &= capture_parents
+                        else:
+                            assert lifetimes_for_arg is True, \
+                                (f"Handle {caller} transfers argument {caller_arg} to handle {handle} for argument"
+                                 f" {index}  but doesn't own it (any longer)")
                     callee_argument_lifetimes.append(combined_caller_lifetimes)
         # We delay checking all the lifetimes until after the transfers are done. This avoids the situation where a
         # handle borrows and then transfers the same value
