@@ -697,6 +697,12 @@ class ControlFlow:
                         self.builder.comment(f"Transferring {caller_arg} argument to {index} for {handle}...")
                         caller_arg_lifetimes[caller_arg] = False
                     callee_argument_lifetimes.append(True)
+                elif arg_management == ArgumentManagement.BORROW_TRANSIENT:
+                    callee_argument_lifetimes.append(set())
+                    for caller_arg in caller_args:
+                        lifetimes_for_arg = caller_arg_lifetimes[caller_arg]
+                        if lifetimes_for_arg:
+                            lifetimes_to_check.update(lifetimes_for_arg)
                 else:
                     combined_caller_lifetimes = set()
                     for caller_arg in caller_args:
