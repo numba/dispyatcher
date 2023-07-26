@@ -825,6 +825,9 @@ class Value(Handle[PythonControlFlow]):
     def handle_arguments(self) -> Sequence[Tuple[Type, ArgumentManagement]]:
         return ()
 
+    def handle_description(self) -> Optional[str]:
+        return repr(self.__value)
+
     def handle_return(self) -> Tuple[Type, ReturnManagement]:
         return PyObjectType(self.__type), ReturnManagement.BORROW
 

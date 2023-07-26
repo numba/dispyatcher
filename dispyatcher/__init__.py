@@ -943,10 +943,19 @@ class DiagramState:
         node_id = f"handle{self.__id_generator}"
         self.__id_generator += 1
         (handle, name, node_colour) = self.__call_stack[-1]
-        arg_labels = "|".join(f"<arg{idx}> {idx}: {graphviz.escape(str(ty))}"
-                              for idx, (ty, _) in enumerate(handle.handle_arguments()))
+        handle_description = handle.handle_description()
+        (ret_ty, ret_mgmt) = handle.handle_return()
+        lines = [
+            "{" + "|".join(f"<arg{idx}> {idx}: {graphviz.escape(str(ty))}[{mgmt.name}]"
+                           for idx, (ty, mgmt) in enumerate(handle.handle_arguments())) + "}",
+            name
+        ]
+        if handle_description:
+            lines.append(graphviz.escape(handle_description))
+
+        lines.append(f"<ret>{ret_ty}[{ret_mgmt.name}]")
         self.__graph.node(node_id,
-                          graphviz.nohtml(f"{{{{{arg_labels}}} | {graphviz.escape(str(handle))} |<ret>{name}}}"),
+                          graphviz.nohtml("{" + " | ".join(lines) + "}"),
                           shape="record",
                           style="filled",
                           fillcolor=node_colour)
@@ -1222,6 +1231,14 @@ class Handle(InvalidationTarget, Generic[F]):
         """
         pass
 
+    def handle_description(self) -> Optional[str]:
+        """
+        Generates a description of the handle for display in graphs
+
+        :return: the description
+        """
+        return None
+
     def handle_return(self) -> Tuple[Type, ReturnManagement]:
         """
         Gets the return information of a handle as a pair of the type and memory management semantics.
@@ -1440,6 +1457,9 @@ class CallSite(Handle):
     def handle_arguments(self) -> Sequence[Tuple[Type, ArgumentManagement]]:
         return self.__handle.handle_arguments()
 
+    def handle_description(self) -> Optional[str]:
+        return self.__id
+
     def handle_return(self) -> Tuple[Type, ReturnManagement]:
         return self.__handle.handle_return()
 
@@ -1520,7 +1540,7 @@ class Clone(Handle[ControlFlow]):
         if self.__type.clone_is_self_contained():
             arg_management = ArgumentManagement.BORROW_TRANSIENT
         else:
-            arg_management = ArgumentManagement.BORROW_CAPTURE_PARENT
+            arg_management = ArgumentManagement.BORROW_CAPTURE_PARENTS
         return (self.__type, arg_management),
 
     def handle_return(self) -> Tuple[Type, ReturnManagement]:
@@ -1750,8 +1770,7 @@ class TakeOwnership(Handle):
         return f"TakeOwnership[{', '.join(str(a) for a in self.__owned_args)}] of {self.__handle}"
 
     def generate_handle_diagram(self, diagram: DiagramState, args: Sequence[str]) -> str:
-        result = diagram.call(self.__handle, args)
-        return diagram.transform(result, "Drop")
+        return diagram.wrap(self.__handle, args)
 
     def generate_handle_ir(self, flow: F, args: Sequence[IRValue]) -> Union[IRValue, TemporaryValue]:
         result = flow.call(self.__handle, [(a, (i,)) for i, a in enumerate(args)])

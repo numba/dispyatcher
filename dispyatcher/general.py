@@ -300,6 +300,9 @@ class NullTerminatedString(Handle[ControlFlow]):
     def handle_arguments(self) -> Sequence[Tuple[Type, ArgumentManagement]]:
         return ()
 
+    def handle_description(self) -> Optional[str]:
+        return repr(self.__value)
+
     def handle_return(self) -> Tuple[Type, ReturnManagement]:
         return UncheckedArray(MachineType(llvmlite.ir.IntType(8))), ReturnManagement.BORROW
 
@@ -330,6 +333,9 @@ class SimpleConstant(Handle[ControlFlow]):
 
     def handle_arguments(self) -> Sequence[Tuple[Type, ArgumentManagement]]:
         return ()
+
+    def handle_description(self) -> Optional[str]:
+        return repr(self.__value)
 
     def handle_return(self) -> Tuple[Type, ReturnManagement]:
         return self.__type, self.__transfer
@@ -368,6 +374,9 @@ class BaseExistingFunction(Handle):
 
     def handle_arguments(self) -> Sequence[Tuple[Type, ArgumentManagement]]:
         return [*self.__args]
+
+    def handle_description(self) -> Optional[str]:
+        return self._name()
 
     def handle_return(self) -> Tuple[Type, ReturnManagement]:
         return self.__return, self.__return_transfer
