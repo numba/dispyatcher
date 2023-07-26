@@ -362,8 +362,8 @@ class BaseExistingFunction(Handle):
         self.__args = args
 
     def __str__(self) -> str:
-        arg_str = ', '.join(f"{a}[{m}]" for a, m in self.__args)
-        return f"{self._name()}[{self.__return_transfer}]({arg_str}) → {self.__return}"
+        arg_str = ', '.join(f"{a}[{m.name}]" for a, m in self.__args)
+        return f"{self._name()}[{self.__return_transfer.name}]({arg_str}) → {self.__return}"
 
     def generate_handle_ir(self, flow: F, args: Sequence[IRValue]) -> Union[TemporaryValue, IRValue]:
         return flow.builder.call(self._function_value(flow,
