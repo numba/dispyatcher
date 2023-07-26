@@ -105,17 +105,15 @@ class PythonFlowTests(unittest.TestCase):
         self.assertEqual(callsite({"a": {"b": 1}}, "a", "b"), 1)
 
     def test_transient_borrow_not_capture(self):
-        pytuple_pack2 = dispyatcher.general.CurrentProcessFunction(
-            dispyatcher.cpython.PyObjectType(tuple),
-            dispyatcher.ReturnManagement.TRANSFER,
-            "PyTuple_Pack",
-            (MachineType(dispyatcher.cpython.SIZE_T_TYPE), dispyatcher.ArgumentManagement.BORROW_TRANSIENT),
-            (PY_OBJECT_TYPE, dispyatcher.ArgumentManagement.BORROW_TRANSIENT),
-            (PY_OBJECT_TYPE, dispyatcher.ArgumentManagement.BORROW_TRANSIENT))
-        pack2 = pytuple_pack2 << (dispyatcher.general.SimpleConstant(MachineType(dispyatcher.cpython.SIZE_T_TYPE), 2),)
         lookup_handle = dispyatcher.cpython.PY_DICT_GET_ITEM + dispyatcher.cpython.ThrowIfNull + dispyatcher.Clone
-
-        callsite = CallSite(pack2 << lookup_handle, PythonControlFlowType())
+        callsite = CallSite(dispyatcher.cpython.TuplePackObjects(2) << lookup_handle, PythonControlFlowType())
 
         self.assertEqual(callsite({"a": 1}, "a", "b"), (1, "b"))
+
+    def test_build_value(self):
+        callsite = CallSite(dispyatcher.cpython.TuplePackCustom(
+            dispyatcher.cpython.INT_TUPLE_ELEMENT[32],
+            dispyatcher.cpython.DOUBLE_TUPLE_ELEMENT),
+            PythonControlFlowType())
+        self.assertEqual(callsite(3, 9.975), (3, 9.975))
 

@@ -456,7 +456,7 @@ class TupleElement:
         <https://septatrix.github.io/cpython-dark-docs/c-api/arg.html#parsing-arguments>`_."""
         pass
 
-    def pack(self) -> int:
+    def pack(self) -> Sequence[Type]:
         """
         The number of input arguments that will be consumed when packing.
 
@@ -502,8 +502,8 @@ class SimpleTupleElement(TupleElement):
     def format_code(self) -> str:
         return self.__format
 
-    def pack(self) -> int:
-        return 1
+    def pack(self) -> Sequence[Type]:
+        return MachineType(self.__type),
 
     def unpack(self, builder: IRBuilder) -> TupleArguments:
         alloc = builder.alloca(self.__type)
@@ -531,6 +531,105 @@ class TupleUnpackingDispatcher(RepackingDispatcher[None]):
                      hint: None) -> Union[Repacker, None]:
         tuple_args = [find_unpack(arg) for arg, _ in output_args[0:len(output_args) - len(input_args) + 1]]
         return _TupleUnpacker(tuple_args)
+
+
+class TuplePackCustom(Handle[PythonControlFlow]):
+    """
+    Creates a tuple from arbitrary parameters using ``Py_BuildValue``.
+    """
+    __elements: Sequence[TupleElement]
+
+    def __init__(self, *elements: TupleElement):
+        """
+        Creates a new tuple packing handle
+
+        :param elements: the individual elements to use
+        """
+        super().__init__()
+        self.__elements = elements
+
+    def __str__(self) -> str:
+        return f"PackTupleCustom[{self.format_string()}]"
+
+    def format_string(self) -> str:
+        return "(" + "".join(e.format_code() for e in self.__elements) + ")"
+
+    def generate_handle_ir(self, flow: F, args: Sequence[IRValue]) -> Union[TemporaryValue, IRValue]:
+        i8 = llvmlite.ir.IntType(8)
+        fn = flow.use_native_function("Py_BuildValue",
+                                      PY_OBJECT_TYPE.machine_type(),
+                                      [CHAR_ARRAY_TYPE.machine_type()],
+                                      var_arg=True)
+        fmt_code = self.format_string().encode("utf-8") + b"\x00"
+        fmt_const = llvmlite.ir.Constant(llvmlite.ir.ArrayType(i8, len(fmt_code)), bytearray(fmt_code))
+        fmt_global = llvmlite.ir.GlobalVariable(flow.builder.module, fmt_const.type,
+                                                flow.builder.module.get_unique_name("tuple_format"))
+        fmt_global.initializer = fmt_const
+        fmt_global.global_constant = True
+
+        result = flow.builder.call(fn, (flow.builder.bitcast(fmt_global, i8.as_pointer()), *args))
+        fail_block = flow.builder.append_basic_block("build_failed")
+        success_block = flow.builder.append_basic_block("build_ok")
+        flow.builder.cbranch(
+            flow.builder.icmp_unsigned("==", result, PY_OBJECT_TYPE.machine_type()(None)),
+            fail_block,
+            success_block)
+        flow.builder.position_at_start(fail_block)
+        flow.unwind()
+        flow.builder.position_at_start(success_block)
+        return result
+
+    def handle_arguments(self) -> Sequence[Tuple[Type, ArgumentManagement]]:
+        return [(ty, ArgumentManagement.BORROW_TRANSIENT) for e in self.__elements for ty in e.pack()]
+
+    def handle_description(self) -> Optional[str]:
+        return self.format_string()
+
+    def handle_return(self) -> Tuple[Type, ReturnManagement]:
+        return PyObjectType(tuple), ReturnManagement.TRANSFER
+
+
+class TuplePackObjects(Handle[PythonControlFlow]):
+    """
+    Creates a tuple from Python objects
+    """
+    __count: int
+
+    def __init__(self, count: int):
+        """
+        Create a new handle that packs Python objects into a tuple.
+
+        :param count: the number of items to pack
+        """
+        super().__init__()
+        self.__count = count
+        assert count >= 0, "Tuple must have non-negative number of entries"
+
+    def __str__(self) -> str:
+        return f"PackObjects[{self.__count}]"
+
+    def generate_handle_ir(self, flow: F, args: Sequence[IRValue]) -> Union[TemporaryValue, IRValue]:
+        fn = flow.use_native_function("PyTuple_Pack", PY_OBJECT_TYPE.machine_type(), [SIZE_T_TYPE], var_arg=True)
+        result = flow.builder.call(fn, (SIZE_T_TYPE(self.__count), *args))
+        fail_block = flow.builder.append_basic_block("build_failed")
+        success_block = flow.builder.append_basic_block("build_ok")
+        flow.builder.cbranch(
+            flow.builder.icmp_unsigned("==", result, PY_OBJECT_TYPE.machine_type()(None)),
+            fail_block,
+            success_block)
+        flow.builder.position_at_start(fail_block)
+        flow.unwind()
+        flow.builder.position_at_start(success_block)
+        return result
+
+    def handle_arguments(self) -> Sequence[Tuple[Type, ArgumentManagement]]:
+        return [(PY_OBJECT_TYPE, ArgumentManagement.BORROW_TRANSIENT)] * self.__count
+
+    def handle_description(self) -> Optional[str]:
+        return str(self.__count)
+
+    def handle_return(self) -> Tuple[Type, ReturnManagement]:
+        return PyObjectType(tuple), ReturnManagement.TRANSFER
 
 
 class _TupleUnpacker(Repacker):
@@ -623,8 +722,8 @@ class _PyCComplexType(Type, TupleElement):
     def machine_type(self) -> LLType:
         return llvmlite.ir.LiteralStructType((llvmlite.ir.DoubleType(), llvmlite.ir.DoubleType()))
 
-    def pack(self) -> int:
-        return 1
+    def pack(self) -> Sequence[Type]:
+        return self,
 
     def unpack(self, builder: IRBuilder) -> TupleArguments:
         alloc = builder.alloca(self.machine_type())
