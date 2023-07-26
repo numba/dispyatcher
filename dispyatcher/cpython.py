@@ -369,7 +369,7 @@ class CheckedCast(BaseTransferUnaryHandle[PythonControlFlow]):
 
     def generate_handle_diagram(self, diagram: DiagramState, args: Sequence[str]) -> str:
         (arg,) = args
-        return diagram.transform(arg, f"→ {self.handle_return()[0].python_type}")
+        return diagram.transform(arg, f"→ {self.handle_return()[0].python_type.__qualname__}")
 
     def generate_handle_ir(self, flow: PythonControlFlow, args: Sequence[IRValue]) -> IRValue:
         arg_type: PyObjectType
