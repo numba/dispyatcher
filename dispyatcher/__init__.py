@@ -446,7 +446,7 @@ class FlowState:
 
         :return: the new flow state that will share the same global addresses and builder as this one
         """
-        return FlowState(self.__builder, self.__dependencies, self.__global_addresses, self.__library_dependencies)
+        return FlowState(self.__builder, {**self.__dependencies}, self.__global_addresses, self.__library_dependencies)
 
     def pluck(self, lifetime: int) -> None:
         """
