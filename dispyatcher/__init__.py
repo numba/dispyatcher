@@ -926,7 +926,7 @@ class DiagramState:
         g = self.__graph
         (dispatch_handle, name, node_colour) = self.__call_stack[-1]
         with self.__graph.subgraph(name=node_id) as s:
-            s.attr(label=name, color=node_colour, style="fill")
+            s.attr(label=name, color=node_colour, style="filled")
             dispatch_args = dispatch_handle.handle_arguments()
             arg_labels = "|".join(f"<arg{idx}> {idx}: {graphviz.escape(str(ty))}"
                                   for idx, (ty, _) in enumerate(dispatch_args))
@@ -1018,13 +1018,25 @@ class DiagramState:
         :param args: the arguments to the inner handle
         :return: the graph identifier for the result
         """
-        node_id = f"wrap{self.__id_generator}"
+        node_id = f"cluster_wrap{self.__id_generator}"
+        node_id_input = f"cluster_wrap{self.__id_generator}_input"
         self.__id_generator += 1
         g = self.__graph
         (_, name, node_colour) = self.__call_stack[-1]
-        with self.__graph.subgraph(name=node_id, label=name, color=node_colour) as s:
+        with self.__graph.subgraph(name=node_id) as s:
+            s.attr(label=name, color=node_colour, style="filled")
+            arg_labels = "|".join(f"<arg{idx}> {idx}: {graphviz.escape(str(ty))}"
+                                  for idx, (ty, _) in enumerate(handle.handle_arguments()))
+            label = f"{{ {{{arg_labels}}} | Input}}"
+            s.node(node_id_input, graphviz.nohtml(label), shape="record")
+
+            child_args = []
+            for idx, arg in enumerate(args):
+                input_arg = f"{node_id_input}:arg{idx}"
+                g.edge(arg, input_arg)
+                child_args.append(input_arg)
             self.__graph = s
-            result = self.call(handle, args)
+            result = self.call(handle, child_args)
 
         self.__graph = g
         return result
