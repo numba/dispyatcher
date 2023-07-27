@@ -92,6 +92,76 @@ class PermuteArguments(Handle):
         return flow.call(self.__handle, call_args)
 
 
+class IntersperseArgument(ArgumentPermutation):
+    """
+    Creates interleaved duplicates of a arguments.
+
+    Effectively turns a handle that takes *XAXBXCXD* into one that takes *XABCD* by duplicating *X*.
+
+    The arguments must be borrowed.
+    """
+    __common_length: int
+    __index: int
+    __repeats: int
+    __unique_length: int
+
+    def __init__(self, index: int, repeats: int, common_length: int = 1, unique_length: int = 1):
+        """
+        Creates a repeat.
+
+        :param index: the start of the common part of the first interleaved sequence (*i.e.*, *X*)
+        :param repeats: the number of copies to create
+        :param common_length: the number of common prefix arguments in each repeat (*i.e.*, the length of *X*)
+        :param unique_length: the number of unique tail elements in each repeat (*i.e.*, the length of *A*)
+        """
+        self.__index = index
+        self.__repeats = repeats
+        self.__common_length = common_length
+        self.__unique_length = unique_length
+        assert index >= 0, "Invalid index"
+        assert repeats > 0, "Invalid repeats"
+        assert common_length > 0, "Invalid common length"
+        assert unique_length > 0, "Invalid unique length"
+
+    def __str__(self) -> str:
+        return f"Intersperse[{self.__index}..+{self.__common_length}..+{self.__unique_length} * {self.__repeats}]"
+
+    def check(self, arguments: Sequence[Tuple[Type, ArgumentManagement]]) -> Optional[str]:
+        end_of_repeat = self.__index + (self.__common_length + self.__unique_length) * self.__repeats
+        if end_of_repeat > len(arguments):
+            return f"End of repeat {end_of_repeat} exceeds length {len(arguments)}"
+        first_common = tuple(arguments[self.__index: self.__index + self.__common_length])
+        for idx, (_, mgmt) in enumerate(first_common):
+            if mgmt in (ArgumentManagement.TRANSFER_TRANSIENT, ArgumentManagement.TRANSFER_CAPTURE_PARENTS):
+                return f"Repeated argument {self.__index + idx} must borrow but is {mgmt.name}"
+        for repeat in range(1, self.__repeats):
+            start = self.__index + (self.__common_length + self.__unique_length) * repeat
+            current_repeat = tuple(arguments[start: start + self.__common_length])
+            if first_common != current_repeat:
+                return f"Arguments in repeat {repeat} does not match previous sequence"
+        return None
+
+    def permute(self, items: Sequence[T]) -> Sequence[T]:
+        output = []
+        output.extend(items[0:self.__index])
+        common = items[self.__index:self.__index + self.__common_length]
+        for repeat in range(self.__repeats):
+            output.extend(common)
+            start = self.__index + self.__common_length + repeat * self.__unique_length
+            output.extend(items[start:start + self.__unique_length])
+        output.extend(items[self.__index + self.__common_length + self.__repeats * self.__unique_length:])
+        return output
+
+    def unpermute(self, items: Sequence[T]) -> Sequence[T]:
+        output = []
+        output.extend(items[0:self.__index + self.__common_length])
+        for repeat in range(self.__repeats):
+            start = self.__index + (self.__common_length + self.__unique_length) * repeat + self.__common_length
+            output.extend(items[start:start + self.__unique_length])
+        output.extend(items[self.__index + (self.__common_length + self.__unique_length) * self.__repeats:])
+        return output
+
+
 class RepeatArgument(ArgumentPermutation):
     """
     Creates duplicates of an argument.
