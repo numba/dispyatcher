@@ -1718,7 +1718,7 @@ class PreprocessArgument(Handle):
         (arg_type, arg_management) = handle.handle_arguments()[index]
         (preprocessor_type, preprocessor_management) = preprocessor.handle_return()
         assert arg_type == preprocessor_type,\
-            f"Preprocessor {preprocessor} produces {preprocessor_type} but handle {handle} expects {arg_type}"
+            f"Preprocessor [{preprocessor}] produces {preprocessor_type} but handle [{handle}] expects {arg_type}"
         self.__needs_copy = (preprocessor_management == ReturnManagement.BORROW and arg_management in
                              (ArgumentManagement.TRANSFER_TRANSIENT, ArgumentManagement.TRANSFER_CAPTURE_PARENTS))
 
