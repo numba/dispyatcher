@@ -1,5 +1,5 @@
 import itertools
-from typing import Dict, List, Sequence, Tuple, TypeVar, Union
+from typing import Dict, List, Optional, Sequence, Tuple, TypeVar, Union
 
 from llvmlite.ir import Value as IRValue
 
@@ -10,10 +10,37 @@ T = TypeVar('T')
 
 
 class ArgumentPermutation:
-    def check(self, arguments: Sequence[Tuple[Type, ArgumentManagement]]) -> bool:
+    """
+    An algorithm to re-arrange arguments
+    """
+    def check(self, arguments: Sequence[Tuple[Type, ArgumentManagement]]) -> Optional[str]:
+        """
+        Check that the arguments provided are legal under the reordering provided.
+
+        :param arguments: the incoming arguments
+        :return: ``None`` if the arguments are acceptable; otherwise an error message
+        """
         pass
 
     def permute(self, items: Sequence[T]) -> Sequence[T]:
+        """
+        Rearrange the input arguments as desired by the algorithm.
+
+        :param items: the items to rearrange
+        :return: the rearranged items
+        """
+        pass
+
+    def unpermute(self, items: Sequence[T]) -> Sequence[T]:
+        """
+        Rearrange the *output* arguments back into the input arguments.
+
+        That is, for any input, ``x == p.permute(p.unpermute(x))```. For totally preserving permutations, this might be
+        the same as ``permute``.
+
+        :param items: the items to rearrange
+        :return: the rearranged items
+        """
         pass
 
 
@@ -34,8 +61,11 @@ class PermuteArguments(Handle):
         self.__handle = handle
         self.__permutations = permutations
         args = handle.handle_arguments()
+        arg_str = ', '.join(f'{a}[{m.name}]' for a, m in args)
         for permutation in permutations:
-            assert permutation.check(args), f"Permutation {permutation} is not acceptable for handle with args {args}"
+            result = permutation.check(args)
+            assert result is None,\
+                f"Permutation {permutation} is not acceptable for handle with args ({arg_str}): {result}"
             args = permutation.permute(args)
 
     def __str__(self) -> str:
@@ -48,8 +78,8 @@ class PermuteArguments(Handle):
 
     def handle_arguments(self) -> Sequence[Tuple[Type, ArgumentManagement]]:
         args = self.__handle.handle_arguments()
-        for permutation in self.__permutations:
-            args = permutation.permute(args)
+        for permutation in reversed(self.__permutations):
+            args = permutation.unpermute(args)
         return args
 
     def handle_return(self) -> Tuple[Type, ReturnManagement]:
@@ -90,20 +120,33 @@ class RepeatArgument(ArgumentPermutation):
     def __str__(self) -> str:
         return f"Repeat[{self.__index}..+{self.__length} * {self.__repeats}]"
 
-    def check(self, arguments: Sequence[Tuple[Type, ArgumentManagement]]) -> bool:
-        for idx, (_, arg_management) in enumerate(arguments):
-            assert arg_management in (ArgumentManagement.BORROW_TRANSIENT,
-                                      ArgumentManagement.BORROW_CAPTURE,
-                                      ArgumentManagement.BORROW_CAPTURE_PARENTS),\
-                f"Copy arguments can only be used for borrowed arguments but {idx} is {arg_management}"
-        return self.__index + self.__length < len(arguments)
+    def check(self, arguments: Sequence[Tuple[Type, ArgumentManagement]]) -> Optional[str]:
+        end_of_repeat = self.__index + self.__length * self.__repeats
+        if end_of_repeat > len(arguments):
+            return f"End of repeat {end_of_repeat} exceeds length {len(arguments)}"
+        first_repeat = tuple(arguments[self.__index: self.__index + self.__length])
+        for idx, (_, mgmt) in enumerate(first_repeat):
+            if mgmt in (ArgumentManagement.TRANSFER_TRANSIENT, ArgumentManagement.TRANSFER_CAPTURE_PARENTS):
+                return f"Repeated argument {self.__index + idx} must borrow but is {mgmt.name}"
+        for repeat in range(1, self.__repeats):
+            start = self.__index + self.__length * repeat
+            current_repeat = tuple(arguments[start: start + self.__length])
+            if first_repeat != current_repeat:
+                return f"Arguments in repeat {repeat} does not match previous sequence"
+        return None
 
     def permute(self, items: Sequence[T]) -> Sequence[T]:
         output = []
         output.extend(items[0:self.__index])
         output.extend(itertools.chain.from_iterable(itertools.repeat(
             items[self.__index: self.__index + self.__length], self.__repeats)))
-        output.extend(items[self.__index:])
+        output.extend(items[self.__index + self.__length:])
+        return output
+
+    def unpermute(self, items: Sequence[T]) -> Sequence[T]:
+        output = []
+        output.extend(items[0:self.__index + self.__length])
+        output.extend(items[self.__index + self.__length * self.__repeats:])
         return output
 
 
@@ -112,11 +155,14 @@ class ReverseArguments(ArgumentPermutation):
     Reverses all the arguments
     """
 
-    def check(self, arguments: Sequence[Tuple[Type, ArgumentManagement]]) -> bool:
+    def check(self, arguments: Sequence[Tuple[Type, ArgumentManagement]]) -> Optional[str]:
         return True
 
     def permute(self, items: Sequence[T]) -> Sequence[T]:
         return list(reversed(items))
+
+    def unpermute(self, items: Sequence[T]) -> Sequence[T]:
+        return self.permute(items)
 
     def __str__(self) -> str:
         return "Reverse"
@@ -146,8 +192,11 @@ class SwapArguments(ArgumentPermutation):
         self.__destination = destination
         self.__length = length
 
-    def check(self, arguments: Sequence[Tuple[Type, ArgumentManagement]]) -> bool:
-        return self.__source + self.__length < len(arguments) and self.__destination + self.__length < len(arguments)
+    def check(self, arguments: Sequence[Tuple[Type, ArgumentManagement]]) -> Optional[str]:
+        for start, name in ((self.__source, "Source"), (self.__destination, "Destination")):
+            if start + self.__length > len(arguments):
+                return f"{name} range [{start}:{start + self.__length}] exceeds length {len(arguments)}"
+        return None
 
     def permute(self, items: Sequence[T]) -> Sequence[T]:
         output = []
@@ -157,6 +206,9 @@ class SwapArguments(ArgumentPermutation):
         output.extend(items[self.__source:self.__source + self.__length])
         output.extend(items[self.__destination + self.__length:])
         return output
+
+    def unpermute(self, items: Sequence[T]) -> Sequence[T]:
+        return self.permute(items)
 
     def __str__(self) -> str:
         src_end = self.__source + self.__length

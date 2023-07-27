@@ -9,6 +9,7 @@ from dispyatcher import CallSite, Identity, IgnoreArguments
 from dispyatcher.allocation import CollectIntoArray
 from dispyatcher.general import MachineType, SimpleConstant
 from dispyatcher.cpython import TupleUnpackingDispatcher, PY_OBJECT_TYPE, PythonControlFlowType
+from dispyatcher.permute import RepeatArgument, PermuteArguments
 
 
 class RepackTests(unittest.TestCase):
@@ -116,3 +117,13 @@ class PythonFlowTests(unittest.TestCase):
             dispyatcher.cpython.DOUBLE_TUPLE_ELEMENT),
             PythonControlFlowType())
         self.assertEqual(callsite(3, 9.975), (3, 9.975))
+
+    def test_permute(self):
+        # This is really an allocation test, but we use Python infrastructure to make it pleasant
+        i8 = MachineType(llvmlite.ir.IntType(8))
+        handle = ((CollectIntoArray(i8, 4, null_terminated=True) + dispyatcher.cpython.PY_UNICODE_FROM_STRING) @
+                  (PermuteArguments, RepeatArgument(0, 2, 2)))
+        callsite = CallSite(handle, PythonControlFlowType())
+        self.assertEqual(callsite(ord('h'), ord('i')), "hihi")
+        with self.assertRaises(AssertionError):
+            handle = dispyatcher.cpython.PY_OBJECT_GET_ATTR_STRING @ (PermuteArguments, RepeatArgument(0, 2))
