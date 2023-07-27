@@ -116,4 +116,3 @@ class PythonFlowTests(unittest.TestCase):
             dispyatcher.cpython.DOUBLE_TUPLE_ELEMENT),
             PythonControlFlowType())
         self.assertEqual(callsite(3, 9.975), (3, 9.975))
-
