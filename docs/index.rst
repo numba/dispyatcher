@@ -59,6 +59,10 @@ The ``DISPYATCHER_DEBUG`` environment variable is a command separated list of de
 
 A graph of data flow can be produced for any handle or callsite by calling ``handle.show_graph()`` and the resulting graph can be displayed or saved using one of ``render``, ``render_and_load``, ``save``, or ``saves``.
 
+=================
+API Documentation
+=================
+
 .. automodule:: dispyatcher
     :members:
 
