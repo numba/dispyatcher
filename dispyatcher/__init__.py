@@ -539,16 +539,18 @@ class TemporaryValue:
     __state: FlowState
     __lifetime: int
     __live: bool
+    __type: Type
     __value: IRValue
 
-    def __init__(self, state: FlowState, value: IRValue, lifetime: int):
+    def __init__(self, state: FlowState, value: IRValue, type: Type, lifetime: int):
         self.__state = state
+        self.__type = type
         self.__value = value
         self.__lifetime = lifetime
         self.__live = True
 
     def __str__(self) -> str:
-        return f"TemporaryValue[{self.__lifetime}]({self.__value})"
+        return f"TemporaryValue[{self.__lifetime}]({self.__value}) → {self.__type}"
 
     @property
     def ir_value(self) -> IRValue:
@@ -601,6 +603,17 @@ class TemporaryValue:
         self.__state.transfer(self.__lifetime)
         self.__live = False
         return self.__value
+
+    def clone(self, flow: "ControlFlow") -> "TemporaryValue":
+        """
+        Creates a new temporary value with a cloned version of this value
+
+        :return: the cloned value
+        """
+        cloned_value = self.__type.clone(flow, self.ir_value)
+        parents = () if self.__type.clone_is_self_contained else ((self.__lifetime, True),)
+        lifetime = self.__state.create_lifetime(cloned_value, parents, self.__type)
+        return TemporaryValue(self.__state, cloned_value, self.__type, lifetime)
 
 
 class ControlFlow:
@@ -741,7 +754,7 @@ class ControlFlow:
                 [(lifetime, capture_inner) for lifetime, capture_inner in argument_lifetime_mapping.items()],
                 callee_return_type if callee_return_management == ReturnManagement.TRANSFER else None)
             self.builder.comment(f"Created {lifetime} for {value}, as result of {handle}")
-            value = TemporaryValue(self.__state, value, lifetime)
+            value = TemporaryValue(self.__state, value, callee_return_type, lifetime)
 
         if cleanups:
             self.builder.comment(f"Cleaning up after call to {handle}")
@@ -1742,7 +1755,7 @@ class PreprocessArgument(Handle):
         preprocessed_result = flow.call(self.__preprocessor, [(args[idx], (idx,)) for idx in
                                                               range(self.__index, self.__index + preprocess_arg_len)])
         if self.__needs_copy:
-            preprocessed_result = self.__preprocessor.handle_return()[0].clone(flow, preprocessed_result.ir_value)
+            preprocessed_result = preprocessed_result.clone(flow)
         handle_args = []
         handle_args.extend((args[idx], (idx,)) for idx in range(self.__index))
         handle_args.append(preprocessed_result)
