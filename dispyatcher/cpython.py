@@ -1026,7 +1026,7 @@ PY_LONG_AS_LONG = CurrentProcessFunction(MachineType(llvmlite.ir.IntType(ctypes.
 
 PY_LONG_FROM_LONG = CurrentProcessFunction(PyObjectType(int),
                                            ReturnManagement.TRANSFER,
-                                           "PyLong_AsLong",
+                                           "PyLong_FromLong",
                                            (LONG_TYPE, ArgumentManagement.BORROW_TRANSIENT)) + ThrowIfNull
 
 PY_COMPLEX_REAL_AS_DOUBLE = CurrentProcessFunction(MachineType(llvmlite.ir.DoubleType()),
