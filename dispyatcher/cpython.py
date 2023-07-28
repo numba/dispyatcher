@@ -1002,6 +1002,13 @@ PY_OBJECT_GET_ATTR = CurrentProcessFunction(PY_OBJECT_TYPE,
                                             (PY_OBJECT_TYPE, ArgumentManagement.BORROW_TRANSIENT),
                                             (PY_OBJECT_TYPE, ArgumentManagement.BORROW_TRANSIENT))
 
+PY_OBJECT_CALL = CurrentProcessFunction(PY_OBJECT_TYPE,
+                                        ReturnManagement.TRANSFER,
+                                        "PyObject_Call",
+                                        (PY_OBJECT_TYPE, ArgumentManagement.BORROW_TRANSIENT),
+                                        (PY_OBJECT_TYPE, ArgumentManagement.BORROW_TRANSIENT),
+                                        (PY_OBJECT_TYPE, ArgumentManagement.BORROW_TRANSIENT)) @ CheckAndUnwind
+
 PY_OBJECT_GET_ATTR_STRING = CurrentProcessFunction(PY_OBJECT_TYPE,
                                                    ReturnManagement.TRANSFER,
                                                    "PyObject_GetAttrString",
