@@ -86,15 +86,32 @@ class PythonFlowTests(unittest.TestCase):
         self.assertEqual(callsite(), "Hi")
 
     def test_callback(self):
-        i32 = MachineType(llvmlite.ir.IntType(32))
-        callback_generator = dispyatcher.cpython.callback(i32, PY_OBJECT_TYPE)
+        callback = dispyatcher.cpython.callback(dispyatcher.cpython.PyObjectType(object),
+                                                dispyatcher.cpython.PY_OBJECT_TUPLE_ELEMENT,
+                                                callback=lambda x: len(x) * 2)
         handle = ((dispyatcher.cpython.PY_DICT_GET_ITEM_STRING << (1, dispyatcher.general.NullTerminatedString("a")))
                   + dispyatcher.cpython.ThrowIfNull
-                  + callback_generator(lambda x: len(x) * 2))
+                  + callback
+                  + dispyatcher.cpython.PY_LONG_AS_LONG)
         callsite = dispyatcher.CallSite(handle, PythonControlFlowType())
         self.assertEqual(callsite({"a": []}), 0)
         self.assertEqual(callsite({"a": [3]}), 2)
         self.assertEqual(callsite({"a": "blah"}), 8)
+
+    def test_callback_throw(self):
+        def cb(x):
+            raise ValueError("No")
+
+        callback = dispyatcher.cpython.callback(dispyatcher.cpython.PyObjectType(object),
+                                                dispyatcher.cpython.PY_OBJECT_TUPLE_ELEMENT,
+                                                callback=cb)
+        handle = ((dispyatcher.cpython.PY_DICT_GET_ITEM_STRING << (1, dispyatcher.general.NullTerminatedString("a")))
+                  + dispyatcher.cpython.ThrowIfNull
+                  + callback
+                  + dispyatcher.cpython.PY_LONG_AS_LONG)
+        callsite = dispyatcher.CallSite(handle, PythonControlFlowType())
+        with self.assertRaises(ValueError):
+            callsite({"a": []})
 
     def test_multi_unwind(self):
         handle = (dispyatcher.cpython.PY_DICT_GET_ITEM + dispyatcher.cpython.ThrowIfNull) //\

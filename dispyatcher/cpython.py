@@ -961,35 +961,22 @@ class Value(Handle[PythonControlFlow]):
         return PyObjectType(self.__type), ReturnManagement.BORROW
 
 
-def callback(return_type: Type, *arguments: Type) -> Callable[[Callable], Handle[PythonControlFlow]]:
+def callback(return_type: Type, *arguments: TupleElement, callback: Callable) -> Handle[PythonControlFlow]:
     """
-    Generates a constructor for callbacks of a certain type.
+    Generates a handle for callbacks of a certain type.
 
     This allows exporting a Python function as a handle. It assumes the handle will be invoked within a Python control
     flow.
 
     :param return_type: the return type of the function
     :param arguments: the argument types of the function
-    :return: a constructor to wrap a Python function as a handle
+    :param callback: the Python object to call
+    :return: the Python function as a handle
     """
-    func_type = ctypes.PYFUNCTYPE(return_type.ctypes_type(), *(a.ctypes_type() for a in arguments))
-
-    class CallbackHandle(BaseIndirectFunction):
-        __func: func_type
-
-        def __init__(self, callback: Callable):
-            super().__init__(return_type,
-                             ReturnManagement.TRANSFER,
-                             *((a, ArgumentManagement.BORROW_TRANSIENT) for a in arguments))
-            self.__func = func_type(callback)
-
-        def _name(self) -> str:
-            return str(self.__func)
-
-        def _address(self) -> ctypes.c_size_t:
-            return ctypes.c_size_t(ctypes.cast(self.__func, ctypes.c_void_p).value)
-
-    return lambda function: CallbackHandle(function) @ CheckAndUnwind
+    return (PY_OBJECT_CALL << (Value(callback, object),
+                               TuplePackCustom(*arguments) // PY_OBJECT_TYPE,
+                               NoneValue())
+            ) // return_type
 
 
 PY_DICT_NEW = CurrentProcessFunction(PY_DICT_TYPE, ReturnManagement.TRANSFER, "PyDict_New")
