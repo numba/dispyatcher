@@ -41,6 +41,8 @@ def llvm_type_to_ctype(ty: LLType):
     if isinstance(ty, llvmlite.ir.VoidType):
         return None
     if isinstance(ty, llvmlite.ir.IntType):
+        if ty.width == 1:
+            return ctypes.c_bool
         if ty.width == 8:
             return ctypes.c_int8
         if ty.width == 16:
