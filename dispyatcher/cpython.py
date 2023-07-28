@@ -106,6 +106,11 @@ class PythonControlFlowType(dispyatcher.ControlFlowType):
                     arg_types: Sequence[Tuple[Type, ArgumentManagement]]) -> F:
         assert not isinstance(return_type, PyObjectType) or return_management == ReturnManagement.TRANSFER,\
             "A Python control flow must return an owned object."
+        for idx, (arg_ty, arg_mgmt) in enumerate(arg_types):
+            assert arg_mgmt in (ArgumentManagement.BORROW_TRANSIENT,
+                                ArgumentManagement.BORROW_CAPTURE,
+                                ArgumentManagement.BORROW_CAPTURE_PARENTS),\
+                f"Argument {idx} of type {arg_ty} is {arg_mgmt.name}, but this not allowed at a callsite level"
 
         return PythonControlFlow(state, return_type.machine_type())
 
