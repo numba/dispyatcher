@@ -486,9 +486,9 @@ class SimpleTupleElement(TupleElement):
     A naive tuple element that has a 1:1 correspondence between element and argument and can be created by an ``alloc``.
     """
     __format: str
-    __type: llvmlite.ir.Type
+    __type: Type
 
-    def __init__(self, format_code: str, ty: llvmlite.ir.Type):
+    def __init__(self, format_code: str, ty: Type):
         """
         Create a new naive tuple element.
 
@@ -503,10 +503,10 @@ class SimpleTupleElement(TupleElement):
         return self.__format
 
     def pack(self) -> Sequence[Type]:
-        return MachineType(self.__type),
+        return self.__type,
 
     def unpack(self, builder: IRBuilder) -> TupleArguments:
-        alloc = builder.alloca(self.__type)
+        alloc = builder.alloca(self.__type.machine_type())
         return TupleArguments(unpack_args=(alloc,), call_args=lambda: (builder.load(alloc),))
 
 
@@ -677,26 +677,26 @@ class _TupleUnpacker(Repacker):
 
 
 INT_TUPLE_ELEMENT = {
-    8: SimpleTupleElement("b", llvmlite.ir.IntType(8)),
-    16: SimpleTupleElement("h", llvmlite.ir.IntType(16)),
-    32: SimpleTupleElement("i", llvmlite.ir.IntType(32)),
-    64: SimpleTupleElement("l", llvmlite.ir.IntType(64)),
-    128: SimpleTupleElement("L", llvmlite.ir.IntType(128)),
+    8: SimpleTupleElement("b", MachineType(llvmlite.ir.IntType(8))),
+    16: SimpleTupleElement("h", MachineType(llvmlite.ir.IntType(16))),
+    32: SimpleTupleElement("i", MachineType(llvmlite.ir.IntType(32))),
+    64: SimpleTupleElement("l", MachineType(llvmlite.ir.IntType(64))),
+    128: SimpleTupleElement("L", MachineType(llvmlite.ir.IntType(128))),
 }
 INT_TUPLE_ELEMENT_ALLOW_OVERFLOW = {
-    8: SimpleTupleElement("B", llvmlite.ir.IntType(8)),
-    16: SimpleTupleElement("H", llvmlite.ir.IntType(16)),
-    32: SimpleTupleElement("I", llvmlite.ir.IntType(32)),
-    64: SimpleTupleElement("k", llvmlite.ir.IntType(64)),
-    128: SimpleTupleElement("K", llvmlite.ir.IntType(128)),
+    8: SimpleTupleElement("B", MachineType(llvmlite.ir.IntType(8))),
+    16: SimpleTupleElement("H", MachineType(llvmlite.ir.IntType(16))),
+    32: SimpleTupleElement("I", MachineType(llvmlite.ir.IntType(32))),
+    64: SimpleTupleElement("k", MachineType(llvmlite.ir.IntType(64))),
+    128: SimpleTupleElement("K", MachineType(llvmlite.ir.IntType(128))),
 }
 
-CHAR_TUPLE_ELEMENT = SimpleTupleElement("c", llvmlite.ir.IntType(8))
-UNICHAR_TUPLE_ELEMENT = SimpleTupleElement("C", llvmlite.ir.IntType(32))
-FLOAT_TUPLE_ELEMENT = SimpleTupleElement("f", llvmlite.ir.FloatType())
-DOUBLE_TUPLE_ELEMENT = SimpleTupleElement("d", llvmlite.ir.DoubleType())
+CHAR_TUPLE_ELEMENT = SimpleTupleElement("c", MachineType(llvmlite.ir.IntType(8)))
+UNICHAR_TUPLE_ELEMENT = SimpleTupleElement("C", MachineType(llvmlite.ir.IntType(32)))
+FLOAT_TUPLE_ELEMENT = SimpleTupleElement("f", MachineType(llvmlite.ir.FloatType()))
+DOUBLE_TUPLE_ELEMENT = SimpleTupleElement("d", MachineType(llvmlite.ir.DoubleType()))
 
-PY_OBJECT_TUPLE_ELEMENT = SimpleTupleElement("O", PY_OBJECT_TYPE.machine_type())
+PY_OBJECT_TUPLE_ELEMENT = SimpleTupleElement("O", PY_OBJECT_TYPE)
 
 
 class _PyCComplexType(Type, TupleElement):
