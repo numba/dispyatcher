@@ -872,6 +872,36 @@ class WithoutGlobalInterpreterLock(Handle[PythonControlFlow]):
         return self.__handle.handle_return()
 
 
+class NoneValue(Handle[PythonControlFlow]):
+    """
+    A handle that returns a reference to a Python object
+    """
+    __type: type
+
+    def __init__(self):
+        """
+        Creates a new handle that returns Python ``None``
+
+        :param value: the value to return
+        :param ty: the Python type the handle will return. This can be explicitly provided as a Python type or a
+            ``PyObjectType`` or it can be automatically inferred from the value provided (``None``). Note that the value
+            must be an instance of this type.
+        """
+        super().__init__()
+
+    def __str__(self) -> str:
+        return "Value(None)"
+
+    def generate_handle_ir(self, flow: F, args: Sequence[IRValue]) -> IRValue:
+        return flow.use_native_global("_Py_NoneStruct", PY_OBJECT_TYPE.machine_type().pointee)
+
+    def handle_arguments(self) -> Sequence[Tuple[Type, ArgumentManagement]]:
+        return ()
+
+    def handle_return(self) -> Tuple[Type, ReturnManagement]:
+        return PyObjectType(object), ReturnManagement.BORROW
+
+
 class Value(Handle[PythonControlFlow]):
     """
     A handle that returns a reference to a Python object
